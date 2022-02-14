@@ -1,0 +1,49 @@
+subject,Dog_ID,EDF1,EDF2,EDF3,Name,Breed,sex,neutered,age,condition,order
+Beny,1,Beny_1,Beny_2,Beny_3,Beny,Mix,m,yes,28,dog,1
+George,2,George_1,George_2,George_3,George4,Collie,m,no,29,human_within,1
+Georgia,3,Georgia1,Georgia2,Georgia3/Georgia4,Georgia,Labrador Retriever,f,yes,45,dog,1
+Timo,4,Timo_1,Timo_2,Timo_3,Timo2,Mix,m,yes,31,dog,1
+Melody,5,Melody_1,Melody_2,Melody_3,Melody,Labrador Retriever,f,yes,37,human_outside,1
+Hetti,6,Hetti_1,Hetti_2,Hetti_3,Hetti,Mix,f,no,32,human_within,1
+Lilly,7,Lilly_1,Lilly_2,Lilly_3,Lilly9,Mix,f,yes,48,dog,1
+Maylo,8,Maylo_1,Maylo_2,Maylo_3,Maylo,Mix,m,yes,70,human_outside,1
+Asta,9,Asta_1,Asta_2,Asta_3,Asta2,Border Collie,f,no,35,human_outside,1
+Joker,10,Joker_1,Joker_2,Joker_3,Joker4,Australian Shepherd,m,no,60,human_outside,1
+Zserbo,11,Zserbo_1,Zserbo_2,Zserbo_3,Zserbo,Small Münsterländer,m,yes,21,human_within,1
+Lenny,12,Lenny_1,Lenny_2,Lenny_3,Lenny4,Canarian Warren Hound,m,yes,87,dog,1
+Amy,13,Amy_1,,,Amy8,Border Collie,f,no,139,human_within,1
+Ace,14,Ace_1/Ace_2,Ace_3,Ace_4,Ace3,Border Collie,m,yes,30,human_within,1
+Schnee,16,Schnee1,Schnee_2,Schnee_3,Schnee,Mix,m,yes,84,human_outside,1
+Beny,1,Beny_1,Beny_2,Beny_3,Beny,Mix,m,yes,28,human_within,2
+George,2,George_1,George_2,George_3,George4,Collie,m,no,29,dog,2
+Georgia,3,Georgia1,Georgia2,Georgia3/Georgia4,Georgia,Labrador Retriever,f,yes,45,human_outside,2
+Timo,4,Timo_1,Timo_2,Timo_3,Timo2,Mix,m,yes,31,human_within,2
+Melody,5,Melody_1,Melody_2,Melody_3,Melody,Labrador Retriever,f,yes,37,human_within,2
+Hetti,6,Hetti_1,Hetti_2,Hetti_3,Hetti,Mix,f,no,32,human_outside,2
+Lilly,7,Lilly_1,Lilly_2,Lilly_3,Lilly9,Mix,f,yes,48,human_outside,2
+Maylo,8,Maylo_1,Maylo_2,Maylo_3,Maylo,Mix,m,yes,70,human_within,2
+Asta,9,Asta_1,Asta_2,Asta_3,Asta2,Border Collie,f,no,35,dog,2
+Joker,10,Joker_1,Joker_2,Joker_3,Joker4,Australian Shepherd,m,no,60,human_within,2
+Zserbo,11,Zserbo_1,Zserbo_2,Zserbo_3,Zserbo,Small Münsterländer,m,yes,21,dog,2
+Lenny,12,Lenny_1,Lenny_2,Lenny_3,Lenny4,Canarian Warren Hound,m,yes,87,human_outside,2
+Amy,13,Amy_1,,,Amy8,Border Collie,f,no,139,dog,2
+Ace,14,Ace_1/Ace_2,Ace_3,Ace_4,Ace3,Border Collie,m,yes,30,dog,2
+Schnee,16,Schnee1,Schnee_2,Schnee_3,Schnee,Mix,m,yes,84,dog,2
+Beny,1,Beny_1,Beny_2,Beny_3,Beny,Mix,m,yes,28,human_outside,3
+George,2,George_1,George_2,George_3,George4,Collie,m,no,29,human_outside,3
+Georgia,3,Georgia1,Georgia2,Georgia3/Georgia4,Georgia,Labrador Retriever,f,yes,45,human_within,3
+Timo,4,Timo_1,Timo_2,Timo_3,Timo2,Mix,m,yes,31,human_outside,3
+Melody,5,Melody_1,Melody_2,Melody_3,Melody,Labrador Retriever,f,yes,37,dog,3
+Hetti,6,Hetti_1,Hetti_2,Hetti_3,Hetti,Mix,f,no,32,dog,3
+Lilly,7,Lilly_1,Lilly_2,Lilly_3,Lilly9,Mix,f,yes,48,human_within,3
+Maylo,8,Maylo_1,Maylo_2,Maylo_3,Maylo,Mix,m,yes,70,dog,3
+Asta,9,Asta_1,Asta_2,Asta_3,Asta2,Border Collie,f,no,35,human_within,3
+Joker,10,Joker_1,Joker_2,Joker_3,Joker4,Australian Shepherd,m,no,60,dog,3
+Zserbo,11,Zserbo_1,Zserbo_2,Zserbo_3,Zserbo,Small Münsterländer,m,yes,21,human_outside,3
+Lenny,12,Lenny_1,Lenny_2,Lenny_3,Lenny4,Canarian Warren Hound,m,yes,87,human_within,3
+Amy,13,Amy_1,,,Amy8,Border Collie,f,no,139,human_outside,3
+Ace,14,Ace_1/Ace_2,Ace_3,Ace_4,Ace3,Border Collie,m,yes,30,human_outside,3
+Schnee,16,Schnee1,Schnee_2,Schnee_3,Schnee,Mix,m,yes,84,human_within,3
+Knopfi,15,Knopfi_1,Knopfi_2,Knopfi_3,Knopfi,australian_shepherd,m,yes,61,human_within,1
+Knopfi,15,Knopfi_1,Knopfi_2,Knopfi_3,Knopfi,australian_shepherd,m,yes,61,human_outside,2
+Knopfi,15,Knopfi_1,Knopfi_2,Knopfi_3,Knopfi,australian_shepherd,m,yes,61,dog,3
