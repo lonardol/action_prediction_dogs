@@ -28,7 +28,8 @@ ia_report<-read.delim(file="data/IA_report_action_prediction_ball_IPwhole2.txt",
 
 demo_data<-read.csv(file="data/AP_ball_counterbalancing_1.csv")
 
-sample_data <- read_delim("data/sample_report_action_prediction_ball_IPwhole2.txt", na=".", delim="\t")%>%
+library(arrow)
+sample_data <- read_parquet("data/ball_sample_report_arrival_looking")%>%
   mutate(Session_Name=fct_recode(RECORDING_SESSION_LABEL, Georgia_2="Georgia2",Georgia_1="Georgia1", Georgia_3="Georgia3", Schnee_1="Schnee1", Georgia_4="Georgia4", Georgia_5="Georgia5"))%>%
   mutate(TRIAL_INDEX=as.numeric(ifelse((RECORDING_SESSION_LABEL=="George_4"|RECORDING_SESSION_LABEL=="Georgia3"|RECORDING_SESSION_LABEL=="Georgia5"|RECORDING_SESSION_LABEL=="Joker_2"|RECORDING_SESSION_LABEL=="Melody_3"), TRIAL_INDEX+3, TRIAL_INDEX)))%>%#fix the trial number
   separate(Session_Name, c("subject", "session.num"), sep = "_") %>%
