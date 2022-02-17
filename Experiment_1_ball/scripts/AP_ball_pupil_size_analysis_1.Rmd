@@ -1,0 +1,910 @@
+---
+title: Pupil size analysis of action prediction ball experiment
+date: "15/12/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list=ls())
+library(tidyverse)
+library(summarytools)
+library(exactRankTests)
+library(lme4)
+library(naniar)
+library(gazer)
+library(zoo)
+source("functions/diagnostic_fcns.r")
+source("functions/glmm_stability.r")
+source("functions/boot_glmm.r")
+
+
+library(itsadug)
+packageVersion("itsadug")
+library(plotfunctions)
+packageVersion("plotfunctions")
+library(colorspace)
+packageVersion("colorspace")
+## Define colors:
+col1 <- 'pink1'
+col2 <- 'black'
+col3 <- 'indianred'
+
+```
+
+### Loading data
+```{r}
+## time.frame for interpolation
+max.time <- 8000
+min.time <- 0
+time <- seq(from = min.time, to = max.time, by = 1)
+xx <- as.data.frame(time)
+
+baseline.end<-200
+
+
+
+demo_data<-read.csv(file="data/AP_ball_counterbalancing.csv")%>%
+  select(-subject)%>%
+  rename(subject="Name")
+
+sample_data <- read_parquet("sample_report")
+
+
+sample.data <- read_delim("data/sample_report_action_prediction_ball_IPwhole_video.txt", na=".", delim="\t")%>%
+  mutate(Session_Name=fct_recode(RECORDING_SESSION_LABEL, Georgia_2="Georgia2",Georgia_1="Georgia1", Georgia_3="Georgia3", Schnee_1="Schnee1", Georgia_4="Georgia4", Georgia_5="Georgia5"))%>%
+  mutate(TRIAL_INDEX=as.numeric(ifelse((RECORDING_SESSION_LABEL=="George_4"|RECORDING_SESSION_LABEL=="Georgia3"|RECORDING_SESSION_LABEL=="Georgia5"|RECORDING_SESSION_LABEL=="Joker_2"|RECORDING_SESSION_LABEL=="Melody_3"), TRIAL_INDEX+3, TRIAL_INDEX)))%>%#fix the trial number
+  separate(Session_Name, c("subject", "session.num"), sep = "_") %>%
+  full_join(demo_data) %>%
+  filter(!is.na(session.num))%>%
+  mutate(time = TIMESTAMP - IP_START_TIME)
+
+
+str(sample.data)
+levels(as.factor(sample.data$condition))
+
+min(sample.data$TIMESTAMP)
+min(sample.data$time)
+max(sample.data$time)
+
+table(sample.data$condition, sample.data$RECORDING_SESSION_LABEL)
+table(sample.data$condition, sample.data$subject)
+table(sample.data$RECORDING_SESSION_LABEL, sample.data$TRIAL_INDEX)
+```
+
+
+
+### Pupil size
+
+#### Artefact check
+*Plot raw data
+```{r eval=FALSE}
+raw_plot_pupil<-ggplot(data = sample.data, aes(x = time, y = RIGHT_PUPIL_SIZE)) +
+  ylab("Pupil size") +
+  xlab("Time (in ms)") +
+  geom_point(aes(color = condition), alpha = 0.3, size = 0.5) +
+  facet_grid(TRIAL_INDEX~subject)+
+  xlim(0, 8000) +
+    theme_bw()+
+  scale_color_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  scale_fill_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.title = element_blank(), legend.position = c(0.65, 0.1), legend.text=element_text(size=12))
+
+ggsave(raw_plot_pupil, filename = "graphics/raw_plot_pupil.png", width=10, height=8, scale=0.8)
+```
+* Plot with blink artefacts removed
+```{r }
+sample.data<-sample.data%>%
+        mutate(RIGHT_PUPIL_SIZE_no_blinks=extend_blinks(RIGHT_PUPIL_SIZE,  hz=1000, fillback=100, fillforward=100))#Extends blinks
+
+
+artefact_check<-ggplot(data = sample.data%>% filter(condition != "hab"), aes(x = time, y = RIGHT_PUPIL_SIZE_no_blinks)) +
+  ylab("Pupil size") +
+  xlab("Time (in ms)") +
+  geom_point(aes(color = condition), alpha = 0.1, size = 0.5) +
+  facet_grid(TRIAL_INDEX~subject)+
+  xlim(0, 8000) +
+    theme_bw()+
+  scale_color_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  scale_fill_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.title = element_blank(), legend.position ="none")
+
+artefact_check
+
+#ggsave(artefact_check, filename = "graphics/contact_artefact_check_100.png", width=10, height=8)
+```
+
+proportion of valid data
+```{r}
+
+prop.tracked.data<-sample.data%>%
+  #mutate(subj_con_trial=paste(subject, condition, TRIAL_INDEX))%>%
+  group_by(subject, condition, TRIAL_INDEX)%>%
+  summarise(length=length(RIGHT_PUPIL_SIZE_no_blinks), sum_noNA=sum(!is.na(RIGHT_PUPIL_SIZE_no_blinks)), prop=sum(!is.na(RIGHT_PUPIL_SIZE_no_blinks))/length(RIGHT_PUPIL_SIZE_no_blinks), min(RIGHT_PUPIL_SIZE), max(RIGHT_PUPIL_SIZE))
+
+prop.tracked.data%>%group_by(condition)%>%summarise(min(prop))
+
+
+
+prop.tracked.gaze.data<-sample.data%>%
+  filter(time<=4770)%>%
+  filter(RIGHT_GAZE_X<1024&RIGHT_GAZE_X>0&RIGHT_GAZE_Y<768&RIGHT_GAZE_Y>0)%>%
+  group_by(subject, condition, TRIAL_INDEX)%>%
+  summarise(prop=sum(!is.na(RIGHT_GAZE_X))/max(time))
+
+#filter out subjects with onscreen gaze data <70%
+sample.data<-sample.data%>%
+  filter(!(subject=="Timo" & TRIAL_INDEX==4 & condition=="human_outside"))
+
+```
+
+
+* Plot distribution of pupil sizes
+```{r eval=FALSE}
+puphist <- ggplot(sample.data, aes(x = RIGHT_PUPIL_SIZE_no_blinks)) + geom_histogram(aes(y = ..count..), 
+    colour = "green", binwidth = 0.5)  + 
+    xlab("Pupil Size") + ylab("Count") + theme_bw() 
+puphist
+```
+
+#### Preprocessing: interpolation, baseline correction, down sampling
+```{r}
+# determine baseline
+exp.data.pupil.base <- sample.data %>%
+  filter(time < baseline.end & time > 0) %>% 
+    group_by(subject, condition) %>%
+  summarise(median.base.pupil = median(RIGHT_PUPIL_SIZE_no_blinks, na.rm = TRUE))
+
+#preprocessing
+exp.data.pupil.processed <- sample.data %>%
+  filter(time<max.time)%>%
+  select(subject, time, condition, TRIAL_INDEX, RIGHT_GAZE_X, RIGHT_GAZE_Y, RIGHT_PUPIL_SIZE_no_blinks) %>%
+  group_by(subject, condition, TRIAL_INDEX, time) %>%
+  full_join(xx%>%select(time)) %>% #add missing time.frames
+  ungroup() %>%
+  group_by(subject, condition, TRIAL_INDEX) %>%
+  mutate(pupil.inter = na.approx(RIGHT_PUPIL_SIZE_no_blinks, na.rm = FALSE, maxgap = 500)) %>% #linear interpolation
+  full_join(exp.data.pupil.base) %>% #add baseline data
+  mutate(pupil.base.corrected = pupil.inter - median.base.pupil)%>% #subtractive baseline correction
+  ungroup()%>%
+    mutate(bin = cut(time, seq(min(time), max(time), 100), right = FALSE))%>% #addition of time bins (100 ms = 10 hz)
+  separate(bin, c("bin_low", "bin_high"), sep=",", remove=FALSE)%>%
+  select(-bin_high)%>%
+  mutate(bin_low=as.numeric(str_replace_all(bin_low, "\\[|\\]", "")))
+  
+#down sampling to 10hz using median values:
+exp.data.pupil.processed.downsampled <- exp.data.pupil.processed %>%  
+  group_by(subject, condition, TRIAL_INDEX, bin_low)%>%
+  summarise(pupil.base.corrected.binned=median(pupil.base.corrected), Xgaze=median(RIGHT_GAZE_X), Ygaze=median(RIGHT_GAZE_Y))%>%
+  ungroup()
+```
+
+
+* Plot interpolated data: individual level
+```{r}
+
+#exp.data.pupil.processed.downsampled2<-exp.data.pupil.processed.downsampled%>%
+#  mutate(condition=fct_recode(condition, "No contact"="exp", "Contact"="con"))
+
+plot.ball.pupil.individual<-ggplot(data = exp.data.pupil.processed.downsampled, aes(x = bin_low, y =pupil.base.corrected.binned )) +
+  ylab("Pupil size ") +
+  xlab("Time (in ms)") +
+    geom_vline(aes(xintercept=baseline.end), lty=2, alpha=0.3)+
+  geom_point(aes(color = condition), alpha = 0.8, size = 0.5) +
+  geom_line(aes(color = condition), alpha = 0.8) +
+  facet_grid(TRIAL_INDEX~subject)+
+  xlim(0, 8000) +
+    theme_bw()+
+  scale_color_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  scale_fill_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.title = element_blank(), legend.position = "none")
+
+plot.ball.pupil.individual
+#ggsave(plot.ball.pupil.individual, filename = "graphics/plot.ball.pupil_baseline_corrected_individual.png", height = 7, width = 8, scale = 0.8)
+```
+
+* Plot group level data
+```{r}
+
+pupil.group.level <- exp.data.pupil.processed.downsampled %>%
+  filter(!is.na(condition))%>%
+  mutate(condition=recode(condition, "human_outside"="Human outside", "human_within"="Human within", "dog"="Dog"))%>%
+  group_by(bin_low, condition) %>%
+  summarise(mean.pupil.corrected.binned = mean(pupil.base.corrected.binned, na.rm = TRUE), sd.pupil.corrected.binned= sd(pupil.base.corrected.binned, na.rm = TRUE), se.pupil.corrected.binned = sd(pupil.base.corrected.binned, na.rm = TRUE) / sqrt(length(pupil.base.corrected.binned)))
+
+plot.ball.pupil <- ggplot(data = pupil.group.level, aes(x = bin_low, y = mean.pupil.corrected.binned)) +
+  geom_vline(aes(xintercept=baseline.end), lty=2, alpha=0.3)+
+    ylab("Pupil size") +
+  xlab("Time (in ms)") +
+  geom_point(aes(x = bin_low, y = mean.pupil.corrected.binned, color = condition), alpha = 0.3, size = 0.5) +
+  geom_ribbon(aes(ymin = mean.pupil.corrected.binned - se.pupil.corrected.binned, ymax = mean.pupil.corrected.binned + se.pupil.corrected.binned, fill = condition), alpha = 0.3) +
+    xlim(0, 8000) +
+    theme_bw()+
+  scale_color_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  scale_fill_manual(values=c("darkorange", "dodgerblue", "darkgreen"))+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.title = element_blank(), legend.position = c(0.80, 0.25), legend.text=element_text(size=12))
+
+plot.ball.pupil
+
+ggsave(plot.ball.pupil, filename = "graphics/plot.ball.pupil_gaze_corrected_200bl.png", height = 5, width = 8, scale = 0.7, dpi=1200)
+```
+### GAMM
+
+* Plot gaze positions
+```{r}
+emptyPlot(c(0,1024), c(768, 0), bty='o',
+          main="Gaze positions", xlab="Xgaze", ylab="Ygaze")
+points(exp.data.pupil.processed.downsampled$Xgaze, exp.data.pupil.processed.downsampled$Ygaze, pch=16, cex=.5, col=alpha(1), xpd=TRUE)
+abline(h=768/2, v=1024/2, lty=1, col='white')
+abline(h=768/2, v=1024/2, lty=2, col=1)
+```
+
+* Plot pupil size by subject
+```{r}
+par(cex=1.1)
+bp <- sortBoxplot(exp.data.pupil.processed.downsampled$pupil.base.corrected.binned ~ exp.data.pupil.processed.downsampled$subject, col=alpha(1), decreasing=FALSE,
+                  ylab="Pupil size", xlab="Subject", bty='n', pch=".")
+
+
+```
+
+#### data preparation for GAMM
+
+* select interest period
+```{r}
+dat <- exp.data.pupil.processed.downsampled%>%
+  filter(bin_low >= 3000 & bin_low <= 7000)%>% #select interest period
+  rename(pupil_base="pupil.base.corrected.binned", time="bin_low")%>%
+  arrange(subject, condition, TRIAL_INDEX, time)%>%#order dataframe
+  droplevels()
+
+dat$condition<-as.factor(dat$condition)
+
+levels(dat$condition)
+dat$subject<-as.factor(dat$subject)
+summary(dat)
+```
+
+
+
+#### fitting GAMM
+
+```{r}
+# Defining events (time series):
+dat$Event <- interaction(dat$subject, dat$condition, dat$TRIAL_INDEX, drop=TRUE)
+
+m2 <- bam(pupil_base ~ condition + s(time, k=20)+ s(time, by=condition, k=20) 
+          + s(Xgaze, Ygaze)
+          + s(time, Event, bs='fs', m=1)
+          , data=dat, discrete=TRUE, nthreads=40, method="ML")
+
+m2.null <- bam(pupil_base ~ s(time, k=20)+ 
+          + s(Xgaze, Ygaze)
+          + s(time, Event, bs='fs', m=1)
+          , data=dat, discrete=TRUE, nthreads=40, method="ML")
+summary(m2)
+
+gam.check(m2)
+
+acf(resid(m2), bty='n', main="ACF residuals model1")
+acf(resid(m2), plot=FALSE)
+
+compareML(m2.null, m2)
+AIC(m2, m2.null)
+```
+
+
+```{r}
+#save gam_check
+library(visibly)
+png("graphics/GAMM01_gam_check.png", units="cm", res=600, width=24, height = 18)
+gam_check_plot<-plot_gam_check(m2, scatter=TRUE)
+print(gam_check_plot)
+dev.off()
+
+png("graphics/GAMM01_acf_plot.png", units="cm", res=600, width=12, height = 12)
+acf_plot<-acf(resid(m2), bty='n', main="")
+print(acf_plot)
+dev.off()
+```
+
+
+* difference curve
+```{r}
+#save data
+plot_diff_m2_dog_hw<-plot_diff(m2, view="time", 
+          comp=list(condition=c("dog", "human_within")), rm.ranef=TRUE, 
+          las=1, ylab="Est. difference in pupil size", 
+            col=col2, hide.label = TRUE, plot = FALSE)
+
+plot_diff_m2_dog_ho<-plot_diff(m2, view="time", 
+          comp=list(condition=c("dog", "human_outside")), rm.ranef=TRUE, 
+          las=1, ylab="Est. difference in pupil size", 
+            col=col2, hide.label = TRUE, plot = FALSE)
+
+plot_diff_m2_hw_ho<-plot_diff(m2, view="time", 
+          comp=list(condition=c("human_within", "human_outside")), rm.ranef=TRUE, 
+          las=1, ylab="Est. difference in pupil size", 
+            col=col2, hide.label = TRUE, plot = FALSE)
+
+plot_diff_m2_dog_hw<-ggplot(data=plot_diff_m2_dog_hw, aes(x=time, y=est))+
+  geom_hline(yintercept = 0)+
+  geom_path(lty=2)+
+  geom_ribbon(aes(x=time, ymin=est-CI, ymax=est+CI), alpha=0.2)+
+  theme_bw()+
+  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Dog - Human within")+
+    theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+
+plot_diff_m2_dog_ho<-ggplot(data=plot_diff_m2_dog_ho, aes(x=time, y=est))+
+  geom_hline(yintercept = 0)+
+  geom_path(lty=2)+
+  geom_ribbon(aes(x=time, ymin=est-CI, ymax=est+CI), alpha=0.2)+
+  theme_bw()+
+  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Dog - Human outside")+
+    theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+
+plot_diff_m2_hw_ho<-ggplot(data=plot_diff_m2_hw_ho, aes(x=time, y=est))+
+  geom_hline(yintercept = 0)+
+  geom_path(lty=2)+
+  geom_ribbon(aes(x=time, ymin=est-CI, ymax=est+CI), alpha=0.2)+
+  theme_bw()+
+  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Human within - Human outside")+
+    theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+
+library(cowplot)
+pg_m2<-plot_grid(plot_diff_m2_dog_hw, plot_diff_m2_dog_ho, plot_diff_m2_hw_ho, nrow=1, labels=c("A", "B", "C"))
+pg_m2
+
+
+ggsave(pg_m2, filename = "graphics/AP_ball_pupilsize_diff_m2_gg.png", width=18, height=6, scale=0.6, dpi=1200)
+
+```
+
+* plotting partial effects
+```{r}
+pdf("graphics/AP_ball_m2_GAMM_partical_effect.pdf", width=10, height = 8)
+plot(m2, pages = 1, all.terms = TRUE, residuals = TRUE, rug=FALSE, pch = 1, cex = 0.5, seWithMean = TRUE, shade = TRUE, shade.col = "lightblue")
+dev.off()
+
+library(mgcViz)
+b <- getViz(m2)
+png("graphics/AP_ball_m2_GAMM_partical_effect2.png", units="cm", res=600, width=24, height = 16)
+p1<-plot(b, allTerms = T)+theme_classic() + labs(title = NULL)
+print(p1, pages = 1 )
+dev.off()
+
+```
+
+
+* Summed effects
+```{r}
+
+plot_smooth(m2, view="time", cond=list(condition="dog"), rm.ranef=TRUE,
+  v0=0, col=col2, lwd=2, lty=6, rug=FALSE, se=1.96,
+  main="Estimated effects", ylab="Pupil (baselined)", las=1)
+
+plot_smooth(m2, view="time", cond=list(condition="human_within"), rm.ranef=TRUE,
+  v0=0, col=col2, lwd=2, lty=6, rug=FALSE, se=1.96,
+  main="Estimated effects", ylab="Pupil (baselined)", las=1)
+plot_smooth(m2, view="time", cond=list(condition="human_outside"), rm.ranef=TRUE,
+  v0=0, col=col2, lwd=2, lty=6, rug=FALSE, se=1.96,
+  main="Estimated effects", ylab="Pupil (baselined)", las=1)
+```
+
+```{r}
+
+tmp <- m2$model
+plot_modelfit(m2, view="time", event=tmp$Event,n = 2)
+
+```
+
+
+
+
+#### Creating plot grid
+```{r}
+library(cowplot)
+
+pg_contact<-plot_grid(plot.contact.pupil, plot_diff_m2_gg, rel_widths = c(2,1),labels=c("E", "F"))
+
+ggsave(pg_contact, filename = "graphics/causal_peception_pupil_size.png", width=10, height=4, scale=0.8)
+
+```
+
+
+
+## Plot gaze data
+*Interpolate dynamic IA values
+
+```{r}
+ai.data<- read_csv("data/VoE_contact_dynamic_IAs.csv") %>%
+  mutate(x_average = (x_l + x_r) / 2, y_average = (y_up + y_low) / 2, time.frame = start)
+
+ai.data.launch<-ai.data%>% filter(label=="launch_ball")
+ai.data.launch.hab<-ai.data%>% filter(label=="launch_ball_hab")
+ai.data.target.exp<-ai.data%>% filter(label=="target_ball_exp")
+ai.data.target.con<-ai.data%>% filter(label=="target_ball_con")
+
+```
+
+```{r}
+
+library(zoo)
+## interpolation
+
+#launch ball
+max.time <- max(ai.data.launch$end)
+min.time <- min(ai.data.launch$start)
+time.frame <- seq(from = min.time, to = max.time, by = 1)
+xx <- as.data.frame(time.frame)
+
+launch.ball.data <- xx %>%
+  full_join(ai.data.launch, by = "time.frame") %>%
+  mutate(x_approx = na.approx(x_average), y_approx = na.approx(y_average), x_l_approx = na.approx(x_l), y_up_approx = na.approx(y_up), x_r_approx = na.approx(x_r), y_low_approx = na.approx(y_low))
+
+#launch ball habituation
+max.time <- max(ai.data.launch.hab$end)
+min.time <- min(ai.data.launch.hab$start)
+time.frame <- seq(from = min.time, to = max.time, by = 1)
+xx <- as.data.frame(time.frame)
+
+launch.ball.data.hab <- xx %>%
+  full_join(ai.data.launch.hab, by = "time.frame") %>%
+  mutate(x_approx = na.approx(x_average), y_approx = na.approx(y_average), x_l_approx = na.approx(x_l), y_up_approx = na.approx(y_up), x_r_approx = na.approx(x_r), y_low_approx = na.approx(y_low))
+
+#target ball exp
+max.time <- max(ai.data.target.exp$end)
+min.time <- min(ai.data.target.exp$start)
+time.frame <- seq(from = min.time, to = max.time, by = 1)
+xx <- as.data.frame(time.frame)
+
+target.ball.data.exp <- xx %>%
+  full_join(ai.data.target.exp, by = "time.frame") %>%
+  mutate(x_approx = na.approx(x_average), y_approx = na.approx(y_average), x_l_approx = na.approx(x_l), y_up_approx = na.approx(y_up), x_r_approx = na.approx(x_r), y_low_approx = na.approx(y_low))
+
+
+#target ball con
+max.time <- max(ai.data.target.con$end)
+min.time <- min(ai.data.target.con$start)
+time.frame <- seq(from = min.time, to = max.time, by = 1)
+xx <- as.data.frame(time.frame)
+
+target.ball.data.con <- xx %>%
+  full_join(ai.data.target.con, by = "time.frame") %>%
+  mutate(x_approx = na.approx(x_average), y_approx = na.approx(y_average), x_l_approx = na.approx(x_l), y_up_approx = na.approx(y_up), x_r_approx = na.approx(x_r), y_low_approx = na.approx(y_low))
+
+```
+
+* prepare data for gaze plotting
+```{r}
+gaze_plot_data <- exp.data.pupil.processed.downsampled %>%
+  filter(bin_low < 13501 ) %>%
+  group_by(bin_low, condition) %>%
+  summarise(mean.x = mean(Xgaze, na.rm=TRUE), median.x = median(Xgaze,  na.rm=TRUE), se.x = sd(Xgaze, na.rm=TRUE) / sqrt(length(Xgaze))) %>%
+  mutate(time.frame=bin_low)%>%
+ left_join(launch.ball.data%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch=x_l_approx, x_r_launch=x_r_approx, x_launch=x_approx))%>%
+  left_join(launch.ball.data.hab%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch_hab=x_l_approx, x_r_launch_hab=x_r_approx, x_launch_hab=x_approx))%>%
+  left_join(target.ball.data.exp%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_exp=x_l_approx, x_r_target_exp=x_r_approx, x_target_exp=x_approx))%>%
+  left_join(target.ball.data.con%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_con=x_l_approx, x_r_target_con=x_r_approx, x_target_con=x_approx))
+
+
+
+gaze_plot_data_subject <- exp.data.pupil.processed.downsampled %>%
+  filter(bin_low < 13501 ) %>%
+  group_by(bin_low, condition, subject) %>%
+  summarise(mean.x = mean(Xgaze, na.rm=TRUE), median.x = median(Xgaze,  na.rm=TRUE), se.x = sd(Xgaze, na.rm=TRUE) / sqrt(length(Xgaze))) %>%
+  mutate(time.frame=bin_low)%>%
+ left_join(launch.ball.data%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch=x_l_approx, x_r_launch=x_r_approx, x_launch=x_approx))%>%
+  left_join(launch.ball.data.hab%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch_hab=x_l_approx, x_r_launch_hab=x_r_approx, x_launch_hab=x_approx))%>%
+  left_join(target.ball.data.exp%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_exp=x_l_approx, x_r_target_exp=x_r_approx, x_target_exp=x_approx))%>%
+  left_join(target.ball.data.con%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_con=x_l_approx, x_r_target_con=x_r_approx, x_target_con=x_approx))
+```
+
+```{r}
+
+
+gaze_plot_data$condition<-relevel(as.factor(gaze_plot_data$condition), "hab", "exp", "con")
+
+con.labs <- c("Familiarisation", "Contact", "No contact")
+names(con.labs) <- c(levels(as.factor(gaze_plot_data$condition)))
+
+gaze_contact_plot<-ggplot(data = gaze_plot_data, aes(x = time.frame, y = mean.x)) +
+  geom_vline(data = gaze_plot_data %>% filter(condition != "hab"),aes(xintercept=baseline.end), lty=2, alpha=0.6)+
+  #target ball
+  geom_ribbon(data = gaze_plot_data %>% filter(condition == "con"), aes(x = time.frame, ymin = x_l_target_con, ymax = x_r_target_con), fill = "#14169D", alpha = 0.8) +
+  geom_line(data = gaze_plot_data %>% filter(condition == "con"), aes(x = time.frame, y = x_target_con), color = "#14169D") +
+  geom_ribbon(data = gaze_plot_data %>% filter(condition == "exp"), aes(x = time.frame, ymin = x_l_target_exp, ymax = x_r_target_exp), fill = "#14169D", alpha = 0.8) +
+  geom_line(data = gaze_plot_data %>% filter(condition == "exp"), aes(x = time.frame, y = x_target_exp), color = "#14169D") +
+  #launch ball
+   geom_ribbon(data = gaze_plot_data %>% filter(condition != "hab"), aes(x = time.frame, ymin = x_l_launch, ymax = x_r_launch), fill = "#d1bd19", alpha = 0.8) +
+  geom_line(data = gaze_plot_data %>% filter(condition != "hab"), aes(x = time.frame, y = x_launch), color = "#d1bd19") + 
+  geom_ribbon(data = gaze_plot_data %>% filter(condition == "hab"), aes(x = time.frame, ymin = x_l_launch_hab, ymax = x_r_launch_hab), fill = "#d1bd19", alpha = 0.8) +
+  geom_line(data = gaze_plot_data %>% filter(condition == "hab"), aes(x = time.frame, y = x_launch_hab), color = "#d1bd19") +
+  #gaze
+  geom_path(data = gaze_plot_data %>% filter(condition == "hab", time.frame<4500), aes(y = median.x), size = 1.2, alpha = 0.8) +
+  geom_ribbon(data = gaze_plot_data %>% filter(condition == "hab", time.frame<4500), aes(ymin = mean.x - se.x, ymax = mean.x + se.x), alpha = 0.3)+
+ #   geom_point(data = gaze_plot_data %>% filter(condition != "hab"), alpha = 0.4,  size=0.5) +
+  geom_point(alpha = 0.1, size=0.5) +
+  geom_path(data = gaze_plot_data %>% filter(condition != "hab"), aes(y = median.x), size = 1.2, alpha = 0.8) +
+        geom_ribbon(data = gaze_plot_data %>% filter(condition != "hab"), aes(ymin = mean.x - se.x, ymax = mean.x + se.x), alpha = 0.4)+
+     facet_wrap(~condition,labeller=labeller(condition=con.labs)) +
+   ylab("Horizontal coordinates (in px)") +
+  xlab("Time (in ms)") +
+  xlim(0, 13517)+
+  ylim(0, 1024)+
+    theme_bw()+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        strip.text.x = element_text(size = 12))
+
+
+gaze_contact_plot
+
+```
+
+
+
+#### Dwell time plot
+```{r}
+xdata <- read_csv("data/causal_perception_dwell_time_data.csv")
+```
+
+* End IP
+```{r}
+test.IP.end.IA.balls.data<-xdata%>%
+  filter(IA_LABEL=="IA_end_launch_ball",  condition!="hab", IP_LABEL=="end_IP")%>%
+  mutate(condition.new=fct_recode(as.factor(condition), "No contact"="exp", "Contact"="con"))
+
+
+test.IP.end.IA.balls.data$condition2 <- jitter(as.numeric(as.factor(test.IP.end.IA.balls.data$condition), amount = .0001))
+y_lim_min<-0
+y_lim_max<-10000
+
+library(gghalves)
+
+
+plot_end_balls <- ggplot(data = test.IP.end.IA.balls.data, aes(x = condition.new, y= IA_DWELL_TIME)) +
+  #Add geom_() objects
+   geom_point(data = test.IP.end.IA.balls.data %>% filter(condition.new =="Contact"), aes(x = condition2), color = 'darkorange', size = 1.5, 
+              alpha = .5) +
+   geom_point(data = test.IP.end.IA.balls.data %>% filter(condition.new =="No contact"), aes(x = condition2), color = 'dodgerblue', size = 1.5, 
+              alpha = .5) +
+   geom_line(aes(x = condition2, group = subject), color = 'lightgray', alpha = .5) +
+  
+   geom_half_boxplot(
+     data = test.IP.end.IA.balls.data %>% filter(condition.new=="Contact"), aes(x=condition2, y = IA_DWELL_TIME), position = position_nudge(x = -.4), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, width = .1, 
+     fill = 'darkorange', alpha = .5) +
+   
+   geom_half_boxplot(
+     data = test.IP.end.IA.balls.data %>% filter(condition.new=="No contact"), aes(x=condition2, y = IA_DWELL_TIME), position = position_nudge(x = .25), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, width = .1, 
+     fill = 'dodgerblue', alpha = .5) +
+   #Define additional settings
+   scale_x_continuous(breaks=c(1,2), labels=c("Contact", "No contact"), limits=c(0.4, 2.5)) +
+   xlab("") + ylab("Dwell time (in ms)") +
+  # ggtitle('Cube: end position') +
+    theme_bw()+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+   coord_cartesian(ylim=c(y_lim_min, y_lim_max))
+  
+plot_end_balls 
+ 
+
+```
+*Plot grid
+```{r}
+pg.contact.gaze<-plot_grid(gaze_contact_plot,plot_end_balls , ncol=2,nrow=1, rel_widths = c(3,1.2), labels=c("C", "D"))
+
+pg.contact2<-plot_grid(pg.contact.gaze,pg_contact, ncol=1)
+```
+
+
+#### Adding screenshots
+
+```{r}
+library(cowplot)
+contact_exp_ini_photo <- "screenshots/contact_exp_ini.jpg"
+contact_con_ini_photo <- "screenshots/contact_con_ini.jpg"
+contact_exp_mid_photo <- "screenshots/contact_exp_mid.jpg"
+contact_exp_fin_photo <- "screenshots/contact_exp_fin.jpg"
+contact_con_mid_photo <- "screenshots/contact_con_mid.jpg"
+contact_con_fin_photo <- "screenshots/contact_con_fin.jpg"
+
+contact_exp_ini <- ggdraw(theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))) + draw_image(contact_exp_ini_photo)
+contact_con_ini <- ggdraw(theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))) + draw_image(contact_con_ini_photo)
+contact_exp_mid <- ggdraw(theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))) + draw_image(contact_exp_mid_photo)
+contact_exp_fin <- ggdraw(theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))) + draw_image(contact_exp_fin_photo)
+contact_con_mid <- ggdraw(theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))) + draw_image(contact_con_mid_photo)
+contact_con_fin <- ggdraw(theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))) + draw_image(contact_con_fin_photo)
+
+contact_pics_exp<-plot_grid(contact_exp_ini, contact_exp_mid, contact_exp_fin, ncol=3)
+contact_pics_con<-plot_grid(contact_con_ini, contact_con_mid, contact_con_fin, ncol=3)
+```
+#### Combine plot grid
+
+```{r}
+pg.contact3<-plot_grid(contact_pics_con, contact_pics_exp, pg.contact2, ncol=1, rel_heights = c(0.5, 0.5, 1.5), labels = c("A", "B", ""), label_colour = "white")
+
+pg.contact3
+
+ggsave(pg.contact3, filename = "graphics/causal_perception_figure1.jpeg", width = 10.5, height=13, scale=0.75, dpi=600)
+ggsave(pg.contact3, filename = "graphics/causal_perception_figure1.pdf", width = 10.5, height=13, scale=0.75)
+```
+
+## Dynamic AoI analysis: r-squared
+
+#### target ball
+```{r}
+data.r2.target <- sample.data %>%
+  filter(time.frame > 933 & time.frame < 3482) %>%
+  mutate(phase2 = ifelse(session.num == 2 & phase == "hab1", "hab4", ifelse(session.num == 2 & phase == "hab2", "hab5", ifelse(session.num == 2 & phase == "hab3", "hab6", ifelse(phase == "test", condition, phase))))) %>%
+  group_by(phase2, condition, time.frame, subject) %>%
+  summarise(mean.x = mean(RIGHT_GAZE_X), mean.y = mean(RIGHT_GAZE_Y), mean.pupil = mean(RIGHT_PUPIL_SIZE)) %>%
+    left_join(launch.ball.data%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch=x_l_approx, x_r_launch=x_r_approx, x_launch=x_approx))%>%
+  left_join(launch.ball.data.hab%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch_hab=x_l_approx, x_r_launch_hab=x_r_approx, x_launch_hab=x_approx))%>%
+  left_join(target.ball.data.exp%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_exp=x_l_approx, x_r_target_exp=x_r_approx, x_target_exp=x_approx))%>%
+  left_join(target.ball.data.con%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_con=x_l_approx, x_r_target_con=x_r_approx, x_target_con=x_approx))
+```
+
+```{r}
+library(broom)
+r2.exp <- data.r2.target %>%
+  droplevels() %>%
+  filter(phase2=="exp")%>%
+  nest(-subject, -phase2) %>%
+  mutate(
+    fit = map(data, ~ lm(mean.x ~ x_target_exp, data = .)),
+    results = map(fit, glance)
+  ) %>%
+  unnest(results) %>%
+  select(subject, phase2, r.squared) %>%
+  rename(r.sq.exp = r.squared) %>%
+  mutate(across(where(is.numeric), round, 3))%>%
+  ungroup()%>%
+  select(-phase2)
+
+
+r2.con <- data.r2.target %>%
+  filter(phase2=="con")%>%
+  droplevels() %>%
+  nest(-subject, -phase2) %>%
+  mutate(
+    fit = map(data, ~ lm(mean.x ~ x_target_con, data = .)),
+    results = map(fit, glance)
+  ) %>%
+  unnest(results) %>%
+  select(subject, r.squared) %>%
+  rename(r.sq.con = r.squared) %>%
+  mutate(across(where(is.numeric), round, 3))%>%
+  ungroup()%>%
+  select(-phase2)
+
+r2.exp %>%
+  summarise(mean = mean(r.sq.exp),median = median(r.sq.exp), min = min(r.sq.exp), max = max(r.sq.exp), sd = sd(r.sq.exp))
+
+r2.con %>%
+  summarise(mean = mean(r.sq.con), median = median(r.sq.con), min = min(r.sq.con), max = max(r.sq.con), sd = sd(r.sq.con))
+
+```
+Comparing r2 values for target ball across the two condition
+```{r}
+
+r2_target<-r2.exp%>%full_join(r2.con )
+t.test(r2_target$r.sq.exp, r2_target$r.sq.con, paired=TRUE)
+
+```
+Determine r² values for the entire sample:
+```{r}
+r2.exp.target.group=lmer(mean.x~x_target_exp+(1|subject), data =  data.r2.target%>%filter(phase2=="exp"),REML=F)
+summary(r2.exp.target.group)
+
+library(MuMIn)
+r.squaredGLMM(object=r2.exp.target.group)
+
+
+r2.con.target.group=lmer(mean.x~x_target_con+(1|subject), data =  data.r2.target%>%filter(phase2=="con"),REML=F)
+summary(r2.con.target.group)
+
+r.squaredGLMM(object=r2.con.target.group)
+```
+
+
+launch ball
+```{r}
+
+data.r2.launch <- sample.data %>%
+  filter(time.frame < 933 & time.frame > 500) %>%
+  mutate(phase2 = ifelse(session.num == 2 & phase == "hab1", "hab4", ifelse(session.num == 2 & phase == "hab2", "hab5", ifelse(session.num == 2 & phase == "hab3", "hab6", ifelse(phase == "test", condition, phase))))) %>%
+  group_by(phase2, condition, time.frame, subject) %>%
+  summarise(mean.x = mean(RIGHT_GAZE_X), mean.y = mean(RIGHT_GAZE_Y), mean.pupil = mean(RIGHT_PUPIL_SIZE)) %>%
+    left_join(launch.ball.data%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch=x_l_approx, x_r_launch=x_r_approx, x_launch=x_approx))%>%
+  left_join(launch.ball.data.hab%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch_hab=x_l_approx, x_r_launch_hab=x_r_approx, x_launch_hab=x_approx))%>%
+  left_join(target.ball.data.exp%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_exp=x_l_approx, x_r_target_exp=x_r_approx, x_target_exp=x_approx))%>%
+  left_join(target.ball.data.con%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_con=x_l_approx, x_r_target_con=x_r_approx, x_target_con=x_approx))
+
+r2.exp <- data.r2.launch %>%
+  droplevels() %>%
+  filter(phase2=="exp"|phase2=="con")%>%
+  nest(-subject, -phase2) %>%
+  mutate(
+    fit = map(data, ~ lm(mean.x ~ x_launch, data = .)),
+    results = map(fit, glance)
+  ) %>%
+  unnest(results) %>%
+  select(subject, phase2, r.squared) %>%
+  rename(r.sq.exp = r.squared) %>%
+  mutate(across(where(is.numeric), round, 3))
+
+r2.exp %>%
+  group_by(phase2) %>%
+  summarise(mean = mean(r.sq.exp), median = median(r.sq.exp),min = min(r.sq.exp), max = max(r.sq.exp), sd = sd(r.sq.exp))
+
+```
+Comparing r2 values for target ball across the two condition
+```{r}
+r2.launch<-r2.exp%>%
+  pivot_wider(names_from = phase2, values_from=r.sq.exp)
+
+t.test(r2.launch$exp, r2.launch$con, paired=TRUE)
+
+```
+Determine r² values for the entire sample:
+```{r}
+r2.exp.launch.group=lmer(mean.x~x_launch+(1|subject), data =  data.r2.launch%>%filter(phase2=="exp"),REML=F)
+summary(r2.exp.launch.group)
+
+library(MuMIn)
+r.squaredGLMM(object=r2.exp.launch.group)
+
+
+r2.con.launch.group=lmer(mean.x~x_launch+(1|subject), data =  data.r2.launch%>%filter(phase2=="con"),REML=F)
+summary(r2.con.launch.group)
+
+r.squaredGLMM(object=r2.con.launch.group)
+```
+
+launch ball: familiarisation
+```{r}
+
+data.ind.hab <- sample.data %>%
+  filter(time.frame < 3486 & time.frame > 500) %>%
+  mutate(phase2 = ifelse(session.num == 2 & phase == "hab1", "hab4", ifelse(session.num == 2 & phase == "hab2", "hab5", ifelse(session.num == 2 & phase == "hab3", "hab6", ifelse(phase == "test", condition, phase))))) %>%
+  group_by(phase2, condition, time.frame, subject) %>%
+  summarise(mean.x = mean(RIGHT_GAZE_X), mean.y = mean(RIGHT_GAZE_Y), mean.pupil = mean(RIGHT_PUPIL_SIZE)) %>%
+    left_join(launch.ball.data%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch=x_l_approx, x_r_launch=x_r_approx, x_launch=x_approx))%>%
+  left_join(launch.ball.data.hab%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_launch_hab=x_l_approx, x_r_launch_hab=x_r_approx, x_launch_hab=x_approx))%>%
+  left_join(target.ball.data.exp%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_exp=x_l_approx, x_r_target_exp=x_r_approx, x_target_exp=x_approx))%>%
+  left_join(target.ball.data.con%>%select(time.frame, x_l_approx, x_r_approx, x_approx)%>%rename(x_l_target_con=x_l_approx, x_r_target_con=x_r_approx, x_target_con=x_approx))
+
+r2.hab <- data.ind.hab %>%
+  droplevels() %>%
+  filter(condition=="hab")%>%
+  nest(-subject, -condition) %>%
+  mutate(
+    fit = map(data, ~ lm(mean.x ~ x_launch_hab, data = .)),
+    results = map(fit, glance)
+  ) %>%
+  unnest(results) %>%
+  select(subject, condition, r.squared) %>%
+  rename(r.sq.hab = r.squared) %>%
+  mutate(across(where(is.numeric), round, 3))
+
+r2.hab %>%
+  group_by(condition) %>%
+  summarise(mean = mean(r.sq.hab), median = median(r.sq.hab),min = min(r.sq.hab), max = max(r.sq.hab), sd = sd(r.sq.hab))
+
+```
+
+Determine r² values for the entire sample:
+```{r}
+r2.hab.group=lmer(mean.x~x_launch_hab+(phase2|subject), data =  data.ind.hab%>%filter(condition=="hab"),REML=F)
+summary(r2.hab.group)
+
+library(MuMIn)
+r.squaredGLMM(object=r2.hab.group)
+```
+### LMM
+* read data 
+```{r}
+exp.data.pupil.lmer <- read_csv("data/causal_perception_pupil_size_aggregated_data.csv")
+```
+
+```{r}
+exp.data.pupil.lmer$z.dev<-scale(exp.data.pupil.lmer$mean.deviation)#mean deviation from center
+exp.data.pupil.lmer$z.age<-scale(exp.data.pupil.lmer$age)
+hist(exp.data.pupil.lmer$pupil.size.corrected)
+
+```
+
+
+```{r}
+mm1.pupil<-lmer(pupil.size.corrected~condition+z.age+z.dev+Order_condition+ (1+z.dev||subject), REML=F, data=exp.data.pupil.lmer)
+
+summary(mm1.pupil)
+
+```
+
+* Assumptions
+```{r}
+diagnostics.plot(mm1.pupil)
+
+ranef.diagn.plot(mm1.pupil)
+
+library(car)
+
+xx=lm(pupil.size.corrected~condition+z.age+z.dev+Order_condition, data=exp.data.pupil.lmer)
+vif(xx)
+```
+
+Model stability 
+```{r}
+
+full.stab=glmm.model.stab(model.res=mm1.pupil, contr=NULL, para=F,
+data=NULL)
+
+table(full.stab$detailed$warnings)
+
+round(full.stab$summary[, -1], 3)
+
+m.stab.plot(full.stab$summary [, -1])
+```
+*Likelihood ratio tests
+```{r}
+tests=as.data.frame(drop1(mm1.pupil, test="Chisq"))
+round(tests, 3)
+```
+* CI
+```{r}
+
+boot.full=boot.glmm.pred(model.res=mm1.pupil, excl.warnings=F,
+nboots=1000, para=T, n.cores=3, resol=1000, level=0.95)
+
+round(boot.full$ci.estimates, 2)
+m.stab.plot(boot.full$ci.estimates)
+```
+
+
+
+
+```{r}
+save.image(file="AP_ball_pupil_size_workspace.RData")
+```
+
+
+
+

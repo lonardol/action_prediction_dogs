@@ -1,0 +1,899 @@
+---
+title: "Action prediction Ball - Arrival time analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#rm(list=ls())
+library(tidyverse)
+library(lme4)
+library(dplyr)
+
+source("./functions/diagnostic_fcns.r")
+source("./functions/glmm_stability.r")
+source("./functions/boot_glmm2.r")
+source("./functions/glmmTMB_stability.r")
+source("./functions/drop1_para_glmmtmb.r")
+source("./functions/boot_glmmTMB.r")
+
+```
+
+## Load data
+```{r}
+ia_report<-read.delim(file="data/IA_report_action_prediction_ball_IPwhole2.txt", sep = "\t")
+
+#sample_report<-read.delim(file="data/sample_report_action_prediction_ball_IPwhole_video.txt", sep = "\t")
+
+demo_data<-read.csv(file="data/AP_ball_counterbalancing_1.csv")
+
+sample_data <- read_delim("data/sample_report_action_prediction_ball_IPwhole2.txt", na=".", delim="\t")%>%
+  mutate(Session_Name=fct_recode(RECORDING_SESSION_LABEL, Georgia_2="Georgia2",Georgia_1="Georgia1", Georgia_3="Georgia3", Schnee_1="Schnee1", Georgia_4="Georgia4", Georgia_5="Georgia5"))%>%
+  mutate(TRIAL_INDEX=as.numeric(ifelse((RECORDING_SESSION_LABEL=="George_4"|RECORDING_SESSION_LABEL=="Georgia3"|RECORDING_SESSION_LABEL=="Georgia5"|RECORDING_SESSION_LABEL=="Joker_2"|RECORDING_SESSION_LABEL=="Melody_3"), TRIAL_INDEX+3, TRIAL_INDEX)))%>%#fix the trial number
+  separate(Session_Name, c("subject", "session.num"), sep = "_") %>%
+  full_join(demo_data) %>%
+  filter(!is.na(session.num))%>%
+  mutate(time = TIMESTAMP - IP_START_TIME)
+
+```
+```{r}
+str(sample_data)
+levels(as.factor(sample_data$condition))
+levels(as.factor(sample_data$RIGHT_INTEREST_AREAS ))
+levels(as.factor(sample_data$RIGHT_INTEREST_AREA_LABEL))
+levels(as.factor(sample_data$RIGHT_INTEREST_AREA_ID))
+
+sample_data%>%filter(RIGHT_INTEREST_AREAS=="[ 2, 3 ]")
+
+min(sample_data$time)
+max(sample_data$time)
+
+table(sample_data$condition, sample_data$RECORDING_SESSION_LABEL)
+table(sample_data$condition, sample_data$subject)
+table(sample_data$age, sample_data$subject)
+table(sample_data$RECORDING_SESSION_LABEL, sample_data$TRIAL_INDEX)
+```
+
+
+### First time the dogs look at the agent
+```{r}
+
+agent_data<-sample_data %>%
+   filter(RIGHT_INTEREST_AREA_LABEL!="target_IA")%>%
+   group_by(RECORDING_SESSION_LABEL, TRIAL_INDEX, subject, condition)%>%
+  summarise(first_entry_time_any_IA=min(time) )
+
+
+
+#agent_data<-ia_report%>%
+#  filter(IA_LABEL!="target_IA")%>%
+#  group_by(RECORDING_SESSION_LABEL, TRIAL_INDEX, IP_START_TIME, TRIAL_START_TIME)%>%
+#  summarise(first_fixation_time_any_IA=min(IA_FIRST_FIXATION_TIME) )
+#  mutate(IA_FIRST_FIXATION_TIME_corrected=as.numeric(IA_FIRST_FIXATION_TIME)-(as.numeric(IP_START_TIME)-as.numeric(TRIAL_START_TIME)))%>%#make sure that the first agent fixation time is calculated from the beginning of the interest period
+ # select(RECORDING_SESSION_LABEL, TRIAL_INDEX, IA_FIRST_FIXATION_TIME_corrected)
+
+```
+
+
+
+subset the data to maintain only recordings after first look at agent
+```{r}
+
+sample_data_after_agent<-sample_data%>%
+  full_join(agent_data)%>%
+  mutate(first_entry_time_any_IA=as.numeric(first_entry_time_any_IA))%>%
+  filter(time>first_entry_time_any_IA) #get rid of target fixations prior to agent fixations
+
+
+
+sample_data_after_agent%>%select(time, first_entry_time_any_IA, VIDEO_FRAME_INDEX )
+
+```
+next steps: find the coordinates of the target AI, then find the first look to the target AI (minimal time for which x and y are within target AI)
+
+target IA:
+left 116
+right 280
+top 103
+bottom 745
+
+minimal time when the dog's gaze is in target IA
+```{r}
+mean_agent_arrival_time<-4782 #approximate agent arrival time +/- a few ms
+
+
+agent_arrival_data<-sample_data_after_agent%>%
+  filter((condition=="human_outside" &  VIDEO_FRAME_INDEX==476)| (condition!="human_outside" &  VIDEO_FRAME_INDEX==477))%>%
+  group_by(subject, condition, TRIAL_INDEX)%>%
+  summarise(agent_arrival_time=max(time, na.rm = TRUE))%>%
+  ungroup()
+
+agent_arrival_data%>%summarise(mean=mean(agent_arrival_time), median=median(agent_arrival_time), min(agent_arrival_time), max(agent_arrival_time)) #median 4785
+
+targetIA_gaze_data<-sample_data_after_agent %>%
+  filter(RIGHT_GAZE_X>=116 & RIGHT_GAZE_X<=280 & RIGHT_GAZE_Y>=103 & RIGHT_GAZE_Y<=745)%>%
+  group_by(subject, condition, TRIAL_INDEX)%>%
+  summarise(min_arrival_time=min(time))%>%
+  ungroup()%>%
+  full_join(agent_arrival_data)%>%
+  mutate(arrival_time_standardised=min_arrival_time-mean_agent_arrival_time)#negative numbers are anticipatory looks
+
+
+```
+
+## Plot arrival times relative to the agent for each subject (mean values per subject)
+```{r}
+
+targetIA_gaze_data.agg<-targetIA_gaze_data%>%
+  group_by(subject, condition)%>%
+  summarise(mean_arrival_time=mean(arrival_time_standardised, na.rm = TRUE))
+
+targetIA_gaze_data.agg$condition2 <- jitter(as.numeric(as.factor(targetIA_gaze_data.agg$condition), amount = .0001))
+
+library(gghalves)
+
+
+arrival_time_plot  <- ggplot(data = targetIA_gaze_data.agg, aes(x = condition, y= mean_arrival_time)) +
+      #geom_line(aes(x = condition2, group = subject), color = "darkgray", lty = 1, alpha = .3) +
+  geom_point(data = targetIA_gaze_data.agg %>% filter(condition == "dog"), aes(x = condition2), color = "dodgerblue", size = 1.5, alpha = .5) +
+  geom_point(data = targetIA_gaze_data.agg %>% filter(condition == "human_within"), aes(x = condition2), color = "darkorange", size = 1.5, alpha = .5, ) +
+    geom_point(data = targetIA_gaze_data.agg %>% filter(condition == "human_outside"), aes(x = condition2), color = "darkgreen", size = 1.5, alpha = .5, ) +
+
+#  geom_half_violin(data = walk.away.data %>% filter(condition == "dog""), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 2.8), side = "r", width = 0.5, fill = "dodgerblue", alpha = .3) +
+ #   geom_half_violin(data = walk.away.data %>% filter(condition == "human_within), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 1.8), side = "r", width = 0.5, fill = "darkorange", alpha = .3) +
+  #    geom_half_violin(data = walk.away.data %>% filter(condition == "human_outside), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 0.8), side = "r", width = 0.5, fill = "darkgreen", alpha = .3) +
+  
+  
+ geom_half_boxplot(
+     data = targetIA_gaze_data.agg %>% filter(condition == "dog"), aes(x = condition2, y = mean_arrival_time), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'dodgerblue', alpha = .5) +
+   
+   geom_half_boxplot(
+     data = targetIA_gaze_data.agg %>% filter(condition == "human_within"), aes(x = condition2, y = mean_arrival_time), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'darkorange', alpha = .5) +
+  
+     geom_half_boxplot(
+     data = targetIA_gaze_data.agg %>% filter(condition == "human_outside"), aes(x = condition2, y = mean_arrival_time), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'darkgreen', alpha = .5) +
+  geom_hline(yintercept = 0, lty=2)+
+  
+  
+  
+  #  geom_errorbar(data = ci.data %>% filter(condition == "ost"), aes(x = 2.3, y = fitted, ymin = lower.cl, ymax = upper.cl), color = "darkorange", width = 0.1, size = 0.6) +
+ # geom_errorbar(data = ci.data %>% filter(condition == "non"), aes(x = 0.65, y = fitted, ymin = lower.cl, ymax = upper.cl), color = "dodgerblue", width = 0.1, size = 0.6) +
+ # geom_point(data = ci.data %>% filter(condition == "ost"), aes(x = 2.3, y = fitted), color = "darkorange", size = 1.5) +
+ # geom_point(data = ci.data %>% filter(condition == "non"), aes(x = 0.65, y = fitted), color = "dodgerblue", size = 1.5) +
+  # Define additional settings
+  xlab("Condition") +
+  ylab("Arrival time relative to agent") +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Dog",  "Human-Outside","Human-Within"), limits = c(0.75,4)) +
+ # ylim(0, 1) +
+  theme_classic()
+
+arrival_time_plot 
+
+ggsave(arrival_time_plot, filename = "graphics/arrival_time_plot_1st_second_included.png", width = 8, height = 8, scale = 0.6)
+
+
+
+```
+
+## Plot arrival times relative to the agent for each recording
+```{r}
+
+
+targetIA_gaze_data$condition2 <- jitter(as.numeric(as.factor(targetIA_gaze_data$condition), amount = .0001))
+
+levels(as.factor(targetIA_gaze_data$subject))
+table(targetIA_gaze_data$subject, targetIA_gaze_data$condition)
+
+library(gghalves)
+
+
+arrival_time_plot_per_recording  <- ggplot(data = targetIA_gaze_data, aes(x = condition, y= arrival_time_standardised)) +
+      #geom_line(aes(x = condition2, group = subject), color = "darkgray", lty = 1, alpha = .3) +
+  geom_point(data = targetIA_gaze_data %>% filter(condition == "dog"), aes(x = condition2), color = "dodgerblue", size = 1.5, alpha = .5) +
+  geom_point(data = targetIA_gaze_data %>% filter(condition == "human_within"), aes(x = condition2), color = "darkorange", size = 1.5, alpha = .5, ) +
+    geom_point(data = targetIA_gaze_data %>% filter(condition == "human_outside"), aes(x = condition2), color = "darkgreen", size = 1.5, alpha = .5, ) +
+
+#  geom_half_violin(data = walk.away.data %>% filter(condition == "dog""), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 2.8), side = "r", width = 0.5, fill = "dodgerblue", alpha = .3) +
+ #   geom_half_violin(data = walk.away.data %>% filter(condition == "human_within), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 1.8), side = "r", width = 0.5, fill = "darkorange", alpha = .3) +
+  #    geom_half_violin(data = walk.away.data %>% filter(condition == "human_outside), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 0.8), side = "r", width = 0.5, fill = "darkgreen", alpha = .3) +
+  
+  
+     geom_half_boxplot(
+     data = targetIA_gaze_data %>% filter(condition == "dog"), aes(x = condition2, y = arrival_time_standardised), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'dodgerblue', alpha = .5) +
+   
+   geom_half_boxplot(
+     data = targetIA_gaze_data %>% filter(condition == "human_within"), aes(x = condition2, y = arrival_time_standardised), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'darkorange', alpha = .5) +
+  
+     geom_half_boxplot(
+     data = targetIA_gaze_data %>% filter(condition == "human_outside"), aes(x = condition2, y = arrival_time_standardised), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'darkgreen', alpha = .5) +
+  geom_hline(yintercept = 0, lty=2)+
+  
+  
+  
+  #  geom_errorbar(data = ci.data %>% filter(condition == "ost"), aes(x = 2.3, y = fitted, ymin = lower.cl, ymax = upper.cl), color = "darkorange", width = 0.1, size = 0.6) +
+ # geom_errorbar(data = ci.data %>% filter(condition == "non"), aes(x = 0.65, y = fitted, ymin = lower.cl, ymax = upper.cl), color = "dodgerblue", width = 0.1, size = 0.6) +
+ # geom_point(data = ci.data %>% filter(condition == "ost"), aes(x = 2.3, y = fitted), color = "darkorange", size = 1.5) +
+ # geom_point(data = ci.data %>% filter(condition == "non"), aes(x = 0.65, y = fitted), color = "dodgerblue", size = 1.5) +
+  # Define additional settings
+  xlab("Condition") +
+  ylab("Arrival time relative to agent") +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Dog",  "Human-Outside","Human-Within"), limits = c(0.75,4)) +
+ # ylim(0, 1) +
+  theme_classic()
+
+arrival_time_plot_per_recording 
+
+ggsave(arrival_time_plot_per_recording, filename = "graphics/arrival_time_plot_per_recording_first_second_included.png", width = 8, height = 8, scale = 0.6)
+
+
+
+```
+
+## Plot arrival times relative to the agent for the first trial per subject
+```{r}
+
+targetIA_gaze_data_first_trial<-targetIA_gaze_data%>%
+  filter(TRIAL_INDEX==1)
+
+targetIA_gaze_data_first_trial$condition2 <- jitter(as.numeric(as.factor(targetIA_gaze_data_first_trial$condition), amount = .0001))
+
+library(gghalves)
+
+
+arrival_time_plot_first_trial  <- ggplot(data = targetIA_gaze_data_first_trial, aes(x = condition, y= arrival_time_standardised)) +
+     # geom_line(aes(x = condition2, group = subject), color = "darkgray", lty = 1, alpha = .3) +
+  geom_point(data = targetIA_gaze_data_first_trial %>% filter(condition == "dog"), aes(x = condition2), color = "dodgerblue", size = 1.5, alpha = .5) +
+  geom_point(data = targetIA_gaze_data_first_trial %>% filter(condition == "human_within"), aes(x = condition2), color = "darkorange", size = 1.5, alpha = .5, ) +
+    geom_point(data = targetIA_gaze_data_first_trial %>% filter(condition == "human_outside"), aes(x = condition2), color = "darkgreen", size = 1.5, alpha = .5, ) +
+
+#  geom_half_violin(data = walk.away.data %>% filter(condition == "dog""), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 2.8), side = "r", width = 0.5, fill = "dodgerblue", alpha = .3) +
+ #   geom_half_violin(data = walk.away.data %>% filter(condition == "human_within), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 1.8), side = "r", width = 0.5, fill = "darkorange", alpha = .3) +
+  #    geom_half_violin(data = walk.away.data %>% filter(condition == "human_outside), aes(x = condition2, y = mean_prop_away_time), position = position_nudge(x = 0.8), side = "r", width = 0.5, fill = "darkgreen", alpha = .3) +
+  
+  
+ geom_half_boxplot(
+     data = targetIA_gaze_data %>% filter(condition == "dog"), aes(x = condition2, y = arrival_time_standardised), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'dodgerblue', alpha = .5) +
+   
+   geom_half_boxplot(
+     data = targetIA_gaze_data %>% filter(condition == "human_within"), aes(x = condition2, y = arrival_time_standardised), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'darkorange', alpha = .5) +
+  
+     geom_half_boxplot(
+     data = targetIA_gaze_data %>% filter(condition == "human_outside"), aes(x = condition2, y = arrival_time_standardised), position = position_nudge(x = 0.3), 
+     side = "r",outlier.shape = NA, center = TRUE, errorbar.draw = TRUE, varwidth = FALSE, 
+     fill = 'darkgreen', alpha = .5) +
+  geom_hline(yintercept = 0, lty=2)+
+  
+  
+  
+  #  geom_errorbar(data = ci.data %>% filter(condition == "ost"), aes(x = 2.3, y = fitted, ymin = lower.cl, ymax = upper.cl), color = "darkorange", width = 0.1, size = 0.6) +
+ # geom_errorbar(data = ci.data %>% filter(condition == "non"), aes(x = 0.65, y = fitted, ymin = lower.cl, ymax = upper.cl), color = "dodgerblue", width = 0.1, size = 0.6) +
+ # geom_point(data = ci.data %>% filter(condition == "ost"), aes(x = 2.3, y = fitted), color = "darkorange", size = 1.5) +
+ # geom_point(data = ci.data %>% filter(condition == "non"), aes(x = 0.65, y = fitted), color = "dodgerblue", size = 1.5) +
+  # Define additional settings
+  xlab("Condition") +
+  ylab("Arrival time relative to agent") +
+  scale_x_continuous(breaks = c(1, 2, 3), labels = c("Dog",  "Human-Outside","Human-Within"), limits = c(0.75,4)) +
+ # ylim(0, 1) +
+  theme_classic()
+
+arrival_time_plot_first_trial
+
+ggsave(arrival_time_plot_first_trial, filename = "graphics/arrival_time_plot_first_trial_first_second_included.png", width = 8, height = 8, scale = 0.6)
+
+
+
+```
+```{r}
+targetIA_gaze_data_first_trial_names<-targetIA_gaze_data_first_trial%>%
+  mutate(condition=recode(condition, "dog"="Dog", "human_outside"="Human outside", "human_within"="Human within"))
+
+targetIA_gaze_data_first_trial_mean<-targetIA_gaze_data_first_trial%>%
+  group_by(condition)%>%
+  summarise(mean=mean(arrival_time_standardised, na.rm=TRUE), se=sd(arrival_time_standardised, na.rm=TRUE)/sqrt(length(arrival_time_standardised)))
+
+targetIA_gaze_data_first_trial_mean_names<-targetIA_gaze_data_first_trial_mean%>%
+  mutate(condition=recode(condition, "dog"="Dog", "human_outside"="Human outside", "human_within"="Human within"))
+
+
+arrival_time_plot_first_trial2  <- ggplot(data = targetIA_gaze_data_first_trial_mean_names, aes(x = condition, y= mean, fill=condition)) +
+  geom_hline(yintercept=0, lwd=.8)+
+  geom_bar(stat="identity", alpha=0.4)+
+  geom_point(data=targetIA_gaze_data_first_trial_names, aes(x=condition,y= arrival_time_standardised), alpha=.3)+
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width=0.5)+
+  #scale_fill_manual(values=c('darkgreen','dodgerblue', 'darkorange'))+
+  theme_bw()+
+  ylab("Mean standardised gaze arrival time (msec)")+
+  xlab("Condition")
+  
+arrival_time_plot_first_trial2 
+ggsave(plot=arrival_time_plot_first_trial2, filename="graphics/arrival_times_barplot_1st_trial_ball.png", dpi=1200, scale=0.6, width=8, height=9)
+```
+
+
+## LMM
+```{r}
+#demo_data2<-read.csv(file="data/AP_ball_counterbalancing_order.csv")
+
+model_data<-targetIA_gaze_data%>%
+  full_join(demo_data)
+
+hist(model_data$arrival_time_standardised)
+hist(sqrt(model_data$min_arrival_time))#looks even less symmetric
+#z-tranformation
+model_data$z.trial=scale(model_data$TRIAL_INDEX)
+model_data$z.order=scale(model_data$order)
+model_data$z.age=scale(model_data$age)
+summary(model_data)
+table(model_data$condition, model_data$sex)
+table(model_data$order, model_data$sex)
+
+model_data<-model_data%>%filter(!is.na(arrival_time_standardised ))
+```
+## fitting LMM (standardised arrival time)
+```{r}
+#library(lmerTest)
+library(lme4)
+
+model1<-lmer(arrival_time_standardised ~ condition + z.trial + z.order + (1+condition+z.trial|subject), REML=FALSE, data=model_data)
+```
+
+Assumptions and stability
+```{r}
+diagnostics.plot(model1)
+shapiro.test(residuals(model1))#residuals not normally distributed
+ranef.diagn.plot(model1)
+full.stab=glmm.model.stab(model.res=model1, contr=NULL, para=F, data=model_data)
+m.stab.plot(full.stab$summary[, -1])
+full.stab$summary
+```
+
+Model output
+```{r}
+summary(model1)
+drop1(model1, test="Chisq")
+
+```
+### Confidence intervals
+```{r}
+boot.full_m1=boot.glmm.pred(model.res=model1, excl.warnings=F,
+nboots=1000, para=T, n.cores=3, resol=1000, level=0.95)
+
+boot.full_m1$ci.estimates
+m.stab.plot(boot.full_m1$ci.estimates)
+```
+
+* CIs for plot
+
+```{r}
+boot.full_m1_plot=boot.glmm.pred(model.res=model1, excl.warnings=F,
+nboots=1000, para=T, n.cores=3, resol=1000, level=0.95, use = "condition")
+
+boot.full_m1_plot$ci.predicted
+```
+
+
+```{r eval=FALSE}
+library(multcomp)
+summary(glht(model1, linfct = mcp(condition= c("dog - human_within = 0", 
+                                      "dog - human_outside = 0",
+                                      "human_within - human_outside = 0"))))
+```
+## beta model on all trials because assumptions of LMM not met
+```{r}
+model_data$min_arrival_time_norm=model_data$min_arrival_time/8000
+min(model_data$min_arrival_time_norm)#min larger than 0
+max(model_data$min_arrival_time_norm)#max smaller than 1
+
+#dummy coding
+model_data$condition_dummy1.c=scale(as.numeric(model_data$condition==levels(as.factor(model_data$condition))[2]), center=TRUE, scale= FALSE)
+model_data$condition_dummy2.c=scale(as.numeric(model_data$condition==levels(as.factor(model_data$condition))[3]), center=TRUE, scale= FALSE)
+
+
+library(glmmTMB)
+contr<-glmmTMBControl(optCtrl=list(iter.max=100000000, eval.max=100000000))
+model1_beta=glmmTMB(min_arrival_time_norm~condition + z.trial + z.order + (1+condition_dummy1.c+condition_dummy2.c+z.trial||subject), family=beta_family, data=model_data,
+      control=contr)
+
+drop1(model1_beta, test="Chisq")
+summary(model1_beta)$coefficients
+overdisp.test(model1_beta) #not overdispersed 0.779
+ranef.diagn.plot(model1_beta) #look good
+```
+model stability
+```{r}
+source("./functions/glmmTMB_stability.r")
+full.stab_beta=glmmTMB.stab(model.res=model1_beta, contr=NULL, para=F, data=model_data)
+full.stab_beta
+m.stab.plot(full.stab_beta$summary[, -1])
+```
+```{r}
+#confidence intervals
+source("./functions/boot_glmmTMB.r")
+model1_beta.ci=boot.glmmTMB(model1_beta,data=model_data,  nboots=1000, para=T, n.cores = "all-1")
+
+model1_beta.ci$ci.estimates$fe
+```
+
+## fitting LMM (standardised arrival time): first trial
+```{r}
+#library(lmerTest)
+library(lme4)
+
+targetIA_gaze_data_first_trial<-targetIA_gaze_data_first_trial%>%full_join(demo_data)
+targetIA_gaze_data_first_trial$z.order=scale(targetIA_gaze_data_first_trial$order)
+targetIA_gaze_data_first_trial<-targetIA_gaze_data_first_trial%>%filter(!is.na(arrival_time_standardised ))
+
+model2<-lmer(arrival_time_standardised ~ condition + z.order + (1|subject), REML=FALSE, data=targetIA_gaze_data_first_trial)
+```
+
+Assumptions and stability
+```{r}
+diagnostics.plot(model2)
+shapiro.test(residuals(model2))# residuals are normally distributed 
+ranef.diagn.plot(model2)
+full.stab_m2=glmm.model.stab(model.res=model2, contr=NULL, para=F, data=targetIA_gaze_data_first_trial)
+m.stab.plot(full.stab_m2$summary[, -1])
+full.stab_m2$summary
+```
+
+Model output
+```{r}
+summary(model2)
+drop1(model2, test="Chisq")
+
+```
+## beta model (because the assumptions of LMM1 were not met)
+
+```{r}
+model_data$min_arrival_time_norm=model_data$min_arrival_time/8000
+min(model_data$min_arrival_time_norm)#min larger than 0
+max(model_data$min_arrival_time_norm)#max smaller than 1
+
+
+library(glmmTMB)
+contr<-glmmTMBControl(optCtrl=list(iter.max=100000000, eval.max=100000000))
+model1_beta=glmmTMB(min_arrival_time_norm~condition + z.trial + z.order + (1+condition+z.trial||subject), family=beta_family, data=model_data,
+      control=contr)
+
+drop1(model1_beta, test="Chisq")
+summary(model1_beta)
+overdisp.test(model1_beta) #not overdispersed (dispersion parameter=0.80)
+```
+model stability
+```{r}
+source("./functions/glmmTMB_stability.r")
+full.stab_beta=glmmTMB.stab(model.res=model1_beta, contr=NULL, para=F, data=model_data)
+full.stab_beta$summary
+m.stab.plot(full.stab_beta$summary[, -1])
+```
+```{r}
+#confidence intervals
+source("./functions/boot_glmmTMB.r")
+model1_beta.ci=boot.glmmTMB(model1_beta,data=model_data,  nboots=1000, para=T, n.cores = "all-1")
+
+model1_beta.ci$ci.estimates$fe
+```
+```{r}
+#confidence intervals for plot
+
+```
+## beta model for gaze arrival times in the first trial 
+
+```{r}
+library(glmmTMB)
+targetIA_gaze_data_first_trial$prop_min_arrival_time<-
+  targetIA_gaze_data_first_trial$min_arrival_time/8000
+min(targetIA_gaze_data_first_trial$prop_min_arrival_time)#min larger than 0
+max(targetIA_gaze_data_first_trial$prop_min_arrival_time)#max smaller than 1
+
+betam_arrival_time_1st_trial<-glmmTMB(prop_min_arrival_time ~ condition + z.order + (1|subject), REML=FALSE, data=targetIA_gaze_data_first_trial, control = contr, family=beta_family)
+```
+
+assumptions and stability
+```{r}
+overdisp.test(betam_arrival_time_1st_trial)# dispersion parameter 0.793
+ranef.diagn.plot(betam_arrival_time_1st_trial)#range on the x axis close to 0 (as it should)
+full.stab_beta_1st=glmmTMB.stab(model.res=betam_arrival_time_1st_trial, contr=NULL, para=F, data=targetIA_gaze_data_first_trial)
+full.stab_beta_1st
+m.stab.plot(full.stab_beta_1st$summary[, -1])
+
+```
+coefficients and LRT
+```{r}
+summary(betam_arrival_time_1st_trial)
+drop1(betam_arrival_time_1st_trial, test="Chisq")
+```
+confidence intervals
+```{r}
+betam_arrival_time_1st_trial.ci=boot.glmmTMB(betam_arrival_time_1st_trial,
+                                          data=targetIA_gaze_data_first_trial,  nboots=1000, para=T, n.cores = "all-1")
+
+betam_arrival_time_1st_trial.ci$ci.estimates$fe
+```
+## one-sample t-tests: mean arrival time
+
+```{r}
+t.test(targetIA_gaze_data.agg$mean_arrival_time[targetIA_gaze_data.agg$condition=="dog"], mu=0)
+
+t.test(targetIA_gaze_data.agg$mean_arrival_time[targetIA_gaze_data.agg$condition=="human_within"], mu=0)
+t.test(targetIA_gaze_data.agg$mean_arrival_time[targetIA_gaze_data.agg$condition=="human_outside"], mu=0)
+
+
+ttest_data<-targetIA_gaze_data.agg%>%
+  dplyr::select(-condition2)%>%
+  pivot_wider(names_from=condition, values_from=mean_arrival_time)
+
+t.test(ttest_data$dog, ttest_data$human_outside, paired=TRUE)
+t.test(ttest_data$dog, ttest_data$human_within, paired=TRUE)
+t.test(ttest_data$human_outside, ttest_data$human_within, paired=TRUE)
+```
+
+## one-sample t-tests: arrival time in first trial
+
+```{r}
+t.test(targetIA_gaze_data_first_trial$arrival_time_standardised[targetIA_gaze_data_first_trial$condition=="dog"], mu=0)
+
+t.test(targetIA_gaze_data_first_trial$arrival_time_standardised[targetIA_gaze_data_first_trial$condition=="human_within"], mu=0)
+t.test(targetIA_gaze_data_first_trial$arrival_time_standardised[targetIA_gaze_data_first_trial$condition=="human_outside"], mu=0)
+
+ttest_data_t1<-targetIA_gaze_data_first_trial%>%
+  dplyr::select(subject, condition, arrival_time_standardised)%>%
+  pivot_wider(names_from=condition, values_from=arrival_time_standardised)
+
+t.test(ttest_data_t1$dog, ttest_data_t1$human_outside, paired=TRUE)
+t.test(ttest_data_t1$dog, ttest_data_t1$human_within, paired=TRUE)
+t.test(ttest_data_t1$human_outside, ttest_data_t1$human_within, paired=TRUE)
+
+```
+
+## Dynamic IAs - Looking times analysis
+
+
+```{r}
+dyn_ia_data<-sample_data%>%
+  separate(RIGHT_INTEREST_AREA_LABEL, sep="_", c("xx", "con", "IA"))%>%
+  filter(!is.na(IA))%>%
+  mutate(ia_size=1/RIGHT_INTEREST_AREA_PIXEL_AREA)%>%
+  group_by(subject, condition, TRIAL_INDEX, IA)%>%
+  dplyr::summarise(dwell_time=n(), standardised_dwell_time=sum(ia_size))%>%#count number of rows
+  ungroup()%>%
+  select(subject, condition, TRIAL_INDEX, IA, dwell_time, standardised_dwell_time)%>%
+  complete(subject, condition, TRIAL_INDEX, IA, fill=list(dwell_time=0))%>% #fill in 0s
+  mutate(standardised_dwell_time=replace_na(standardised_dwell_time, 0))%>%
+  full_join(demo_data)#%>%
+  #full_join(dyn_ia_data_IAsize)
+  
+```
+
+
+
+# Plot looking times (count of the samples in the IAs)
+
+* standardized looking times
+
+```{r}
+p.d<-ggplot(data=dyn_ia_data%>%filter(condition=="dog"), aes(x=IA, y=standardised_dwell_time))+
+  geom_boxplot()+
+  ylim(0, 0.3)
+
+p.hw<-ggplot(data=dyn_ia_data%>%filter(condition=="human_within"), aes(x=IA, y=standardised_dwell_time))+
+  geom_boxplot()+
+  ylim(0, 0.3)
+
+p.ho<-ggplot(data=dyn_ia_data%>%filter(condition=="human_outside"), aes(x=IA, y=standardised_dwell_time))+
+  geom_boxplot()+
+  ylim(0, 0.3)
+
+library(cowplot)
+plot_grid(p.d, p.hw, p.ho, nrow=1, labels=c("Dog", "Human Within", "Human Outside"),
+          hjust = 0, vjust= 1.7, label_x = c(0.525,0.35,0.325))
+
+
+ggsave(filename="graphics/looking_times_standardised_cond_IA_ball.png",
+  plot = last_plot(),
+  width=8,
+  height=5,
+  dpi=1200)
+
+```
+* absolute looking times
+
+```{r}
+p.d2<-ggplot(data=dyn_ia_data%>%filter(condition=="dog"), aes(x=IA, y=dwell_time))+
+  geom_boxplot()+
+  ylim(0, 7000)
+
+p.hw2<-ggplot(data=dyn_ia_data%>%filter(condition=="human_within"), aes(x=IA, y=dwell_time))+
+  geom_boxplot()+
+  ylim(0, 7000)
+
+p.ho2<-ggplot(data=dyn_ia_data%>%filter(condition=="human_outside"), aes(x=IA, y=dwell_time))+
+  geom_boxplot()+
+  ylim(0, 7000)
+
+library(cowplot)
+abs_looking_times_plot<-plot_grid(p.d2, p.hw2, p.ho2, nrow=1, 
+                                  labels=c("Dog", "Human Within", "Human Outside"),
+                                  hjust = 0, vjust= 1.6, label_x = c(0.525,0.35,0.325))
+
+ggsave(filename="graphics/looking_times_absolute_cond_IA_ball.png",
+  plot = abs_looking_times_plot,
+  width=8,
+  height=5,
+  dpi=1200)
+
+```
+#### Linear mixed model 
+
+```{r}
+library(lme4)
+
+dyn_ia_data$z.order=scale(dyn_ia_data$order)
+dyn_ia_data$z.trial=scale(dyn_ia_data$TRIAL_INDEX)
+
+min(dyn_ia_data$dwell_time)
+max(dyn_ia_data$dwell_time)
+
+hist(dyn_ia_data$dwell_time)
+hist(sqrt(dyn_ia_data$dwell_time))
+
+hist(dyn_ia_data$standardised_dwell_time)
+hist(dyn_ia_data$sqrt_std_dwell_time)
+```
+
+
+```{r}
+#manual dummy coding
+dyn_ia_data$condition_dummy1.c=scale(as.numeric(dyn_ia_data$condition==levels(as.factor(dyn_ia_data$condition))[2]), center=TRUE, scale= FALSE)
+dyn_ia_data$condition_dummy2.c=scale(as.numeric(dyn_ia_data$condition==levels(as.factor(dyn_ia_data$condition))[3]), center=TRUE, scale=FALSE)
+dyn_ia_data$IA_dummy1.c=scale(as.numeric(dyn_ia_data$IA==levels(as.factor(dyn_ia_data$IA))[2]), center=TRUE, scale=FALSE)
+
+dyn_ia_data$sqrt_dwell_time<-sqrt(dyn_ia_data$dwell_time)
+mm_abs_looking_time<-lmer(sqrt_dwell_time ~ condition* IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data)
+
+mm_abs_looking_time_red<-lmer(sqrt_dwell_time ~ condition+ IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data)
+
+#full-null model comparison
+
+null_abs_looking_time<-lmer(sqrt_dwell_time ~ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data)
+
+anova(mm_abs_looking_time, null_abs_looking_time, test="Chisq") #significant (LRT:16.491, Df=5, P=   0.006)
+
+
+anova(mm_abs_looking_time, mm_abs_looking_time_red, test="Chisq")#interaction not significant (LRT=3.80  Df=2, P=0.149)
+```
+
+IGNORE: Assumptions and stability (re-do only for the model without interaction?)
+```{r}
+diagnostics.plot(mm_abs_looking_time)
+shapiro.test(residuals(mm_abs_looking_time))# normally distributed
+ranef.diagn.plot(mm_abs_looking_time)
+full.stab_mm_abs_looking_time=glmm.model.stab(model.res=mm_abs_looking_time, contr=NULL, para=F, data=dyn_ia_data)
+m.stab.plot(full.stab_mm_abs_looking_time$summary[, -1])
+full.stab_mm_abs_looking_time$summary
+```
+
+IGNORE: Model output
+```{r}
+summary(mm_abs_looking_time)
+drop1(mm_abs_looking_time, test="Chisq")
+```
+interaction not significant
+
+Model without interaction
+```{r}
+mm_abs_looking_time2<-lmer(sqrt_dwell_time ~ condition+ IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data)
+
+mm_abs_looking_time2_null<-lmer(sqrt_dwell_time ~ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data)
+
+anova(mm_abs_looking_time2, mm_abs_looking_time2_null, test="Chisq")
+```
+
+Assumptions and stability
+```{r}
+diagnostics.plot(mm_abs_looking_time2)
+ranef.diagn.plot(mm_abs_looking_time2)
+shapiro.test(residuals(mm_abs_looking_time2))# normally distributed
+source("./functions/glmm_stability.r")
+full.stab_mm_abs_looking_time2=glmm.model.stab(model.res=mm_abs_looking_time2, contr=NULL, para=F, data=dyn_ia_data)
+m.stab.plot(full.stab_mm_abs_looking_time2$summary[, -1])
+full.stab_mm_abs_looking_time2$summary
+```
+
+Model output
+```{r}
+#coefficients
+summary(mm_abs_looking_time2)
+# P-values for the individual fixed effects obtained using the Satterthwaite approximation
+#for a model based on REML
+library(lmerTest)
+
+mm_abs_looking_time2_reml<-lmer(sqrt_dwell_time ~ condition + IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=TRUE, data=dyn_ia_data)
+round(summary(mm_abs_looking_time2_reml)$coefficients, 3)
+```
+#confidence intervals 
+```{r}
+boot.mm.abs.lt=boot.glmm.pred(model.res=mm_abs_looking_time2, nboots=1000, para=T)
+round(boot.mm.abs.lt$ci.estimates, 2)
+```
+#pairwise comparisons
+```{r}
+library(multcomp)
+summary(glht(mm_abs_looking_time2_reml, linfct = mcp(condition= c("human_within - dog = 0", 
+                                      "human_outside - dog = 0",
+                                      "human_within - human_outside = 0"))))
+```
+
+#### Standardized dwell time
+
+```{r}
+
+dyn_ia_data$sqrt_std_dwell_time<-sqrt(dyn_ia_data$standardised_dwell_time)
+mm_std_looking_time<-lmer(sqrt_std_dwell_time ~ condition* IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data)
+```
+
+Assumptions and stability
+```{r}
+diagnostics.plot(mm_std_looking_time)
+ranef.diagn.plot(mm_std_looking_time)
+shapiro.test(residuals(mm_std_looking_time))#not normally distributed
+full.stab_mm_rel_looking_time=glmm.model.stab(model.res=mm_std_looking_time, contr=NULL, para=F, data=dyn_ia_data)
+m.stab.plot(full.stab_mm_rel_looking_time$summary[, -1])
+full.stab_mm_rel_looking_time$summary
+```
+
+Model output
+```{r}
+summary(mm_std_looking_time)
+drop1(mm_std_looking_time, test="Chisq")
+
+mm_std_looking_time_red<-lmer(sqrt_std_dwell_time ~ condition + IA+ z.order + z.trial+ (1+condition*IA+z.order+z.trial|subject), REML=FALSE, data=dyn_ia_data)
+
+anova(mm_std_looking_time_red, mm_std_looking_time, test="Chisq")
+
+```
+
+
+Model without interaction
+
+```{r}
+library(lmerTest)
+
+dyn_ia_data$sqrt_std_dwell_time<-sqrt(dyn_ia_data$standardised_dwell_time)
+mm_std_looking_time2<-lmer(sqrt_std_dwell_time ~ condition+ IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, data=dyn_ia_data, control=lmerControl(optCtrl=list(maxfun=10000))) 
+
+```
+
+Assumptions and stability
+```{r}
+diagnostics.plot(mm_std_looking_time2)
+ranef.diagn.plot(mm_std_looking_time2)
+shapiro.test(residuals(mm_std_looking_time2))
+full.stab_mm_rel_looking_time2=glmm.model.stab(model.res=mm_std_looking_time2, contr=NULL, para=F, data=dyn_ia_data)
+m.stab.plot(full.stab_mm_rel_looking_time2$summary[, -1])
+full.stab_mm_rel_looking_time2$summary
+```
+
+Model output
+```{r}
+summary(mm_std_looking_time2)
+drop1(mm_std_looking_time2, test="Chisq")
+```
+
+```{r eval=FALSE}
+library(multcomp)
+summary(glht(mm_std_looking_time2, linfct = mcp(condition= c("human_within - dog = 0", 
+                                      "human_outside - dog = 0",
+                                      "human_within - human_outside = 0"))))
+
+
+library(lsmeans)
+lsmeans(mm_std_looking_time2, pairwise~condition)#convergence warning
+
+dyn_ia_data$condition.rel=relevel(as.factor(dyn_ia_data$condition), ref="human_within")
+levels(dyn_ia_data$condition.rel)
+mm_std_looking_time2.relevelled<-lmer(sqrt_std_dwell_time ~ condition.rel + IA+ z.order + z.trial+ (1+condition.rel+IA+z.order+z.trial|subject), REML=FALSE, data=dyn_ia_data, control=lmerControl(optCtrl=list(maxfun=10000)))
+
+summary(mm_std_looking_time2.relevelled)
+
+```
+#beta model for standardised looking times because residuals of LMM are not normally distributed
+```{r}
+min(dyn_ia_data$standardised_dwell_time)#min =  0
+max(dyn_ia_data$standardised_dwell_time)#max smaller than 1
+
+#remove 0s (and 1s)
+dyn_ia_data$resp <- (dyn_ia_data$standardised_dwell_time*(length(dyn_ia_data$standardised_dwell_time) - 1) + 0.5)/length(dyn_ia_data$standardised_dwell_time) 
+
+dyn_ia_data<-dyn_ia_data%>%drop_na(resp)
+hist(dyn_ia_data$resp)
+
+min(dyn_ia_data$resp) # > 0
+max(dyn_ia_data$resp) # < 1
+
+library(glmmTMB)
+contr<-glmmTMBControl(optCtrl=list(iter.max=100000000, eval.max=100000000))
+betam_std_looking_time<-glmmTMB(resp ~ condition * IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+
+
+#coefficients
+#summary(betam_std_looking_time)
+#overdispersion
+#overdisp.test(betam_std_looking_time) #1.03
+
+#p-values
+drop1(betam_std_looking_time, test="Chisq") #interaction not significant
+#re-fit the model without
+betam_std_looking_time2<-glmmTMB(resp ~ condition + IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+#full-null model comparison significant (IA, condition or both have an influence on the response)
+null_betam_std_looking_time2= glmmTMB(resp ~ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+anova(betam_std_looking_time2, null_betam_std_looking_time2, test="Chisq") # LRT=36.592, df=3, p<0.001
+```
+assumptions
+```{r}
+overdisp.test(betam_std_looking_time2) #not overdispersed 1.02
+ranef.diagn.plot(betam_std_looking_time2) #look ok
+```
+model output
+```{r}
+summary(betam_std_looking_time2)$coefficients$cond
+
+drop1(betam_std_looking_time2, test="Chisq") # model convergence warning (probably due to covariate z.order)
+
+#I try to fit reduced models lacking first condition and then IA as fixed effects
+red_betam_std_looking_time2_cond= glmmTMB(resp ~ IA+z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+anova(betam_std_looking_time2, red_betam_std_looking_time2_cond, test="Chisq")#gives exactly same result as drop1
+red_betam_std_looking_time2_IA= glmmTMB(resp ~ condition+z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+anova(betam_std_looking_time2, red_betam_std_looking_time2_IA, test="Chisq")#gives exactly same result as drop1, hence results of drop1 are reported
+
+red_betam_std_looking_time2_order= glmmTMB(resp ~ condition + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+anova(betam_std_looking_time2, red_betam_std_looking_time2_order, test="Chisq")
+
+```
+model stability
+```{r}
+source("./functions/glmmTMB_stability.r")
+full.stab_beta_std=glmmTMB.stab(model.res=betam_std_looking_time2, contr=NULL, para=F, data=dyn_ia_data)
+round(full.stab_beta_std$summary[, -1], 2)
+m.stab.plot(full.stab_beta_std$summary[, -1])
+
+```
+confidence intervals
+```{r}
+source("./functions/boot_glmmTMB.r")
+betam_std_time.ci=boot.glmmTMB(betam_std_looking_time2,data=dyn_ia_data,  nboots=1000, para=T, n.cores = "all-1")
+
+round(betam_std_time.ci$ci.estimates$fe, 2)
+```
+condition re-leveled to obtain comparison human outside - human within
+```{r}
+dyn_ia_data$condition.rel=relevel(as.factor(dyn_ia_data$condition), ref="human_within")
+levels(dyn_ia_data$condition.rel)
+#manual dummy coding
+dyn_ia_data$condition.rel_dummy1.c=scale(as.numeric(dyn_ia_data$condition.rel==levels(as.factor(dyn_ia_data$condition.rel))[2]), center=TRUE, scale=FALSE)
+dyn_ia_data$condition.rel_dummy2.c=scale(as.numeric(dyn_ia_data$condition.rel==levels(as.factor(dyn_ia_data$condition.rel))[3]), center=TRUE, scale=FALSE)
+
+library(glmmTMB)
+betam_std_looking_time2_relev<-glmmTMB(resp ~ condition.rel + IA+ z.order + z.trial+ (1+(condition_dummy1.c+condition_dummy2.c)*IA_dummy1.c+z.order+z.trial||subject), REML=FALSE, family=beta_family, data=dyn_ia_data, control=contr)
+#coefs and test
+round(summary(betam_std_looking_time2_relev)$coefficients$cond,3)
+```
+
+
