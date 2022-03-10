@@ -1,6 +1,6 @@
 ---
-title: Pupil size analysis of action prediction ball experiment
-date: "15/12/2021"
+title: Pupil size analysis of action prediction elephant experiment
+date: "25/12/2021"
 output:
   html_document: default
   pdf_document: default
@@ -16,12 +16,14 @@ library(summarytools)
 library(exactRankTests)
 library(lme4)
 library(naniar)
-library(gazer)
+#install.packages("remotes")
+#remotes::install_github("dmirman/gazer")
+library(gazer) 
 library(zoo)
+library(itsadug)
 source("functions/diagnostic_fcns.r")
 source("functions/glmm_stability.r")
 source("functions/boot_glmm.r")
-
 
 library(itsadug)
 packageVersion("itsadug")
@@ -46,18 +48,20 @@ xx <- as.data.frame(time)
 
 baseline.end<-200
 
-demo_data<-read.csv(file="data/AP_ball_counterbalancing.csv")%>%
-  select(-subject)%>%
+
+demo_data<-read.csv(file="data/AP_elephant_counterbalancing_order.csv")%>%
+    select(-subject)%>%
   rename(subject="Name")
+  
+#select(-Name)
+#%>%rename(subject="Name")
 
-library(arrow)
-
- sample_data <- read_parquet("data/ball_sample_report_pupil")%>%
-  mutate(Session_Name=fct_recode(RECORDING_SESSION_LABEL, Georgia_2="Georgia2",Georgia_1="Georgia1", Georgia_3="Georgia3", Schnee_1="Schnee1", Georgia_4="Georgia4", Georgia_5="Georgia5"))%>%
-  mutate(TRIAL_INDEX=as.numeric(ifelse((RECORDING_SESSION_LABEL=="George_4"|RECORDING_SESSION_LABEL=="Georgia3"|RECORDING_SESSION_LABEL=="Georgia5"|RECORDING_SESSION_LABEL=="Joker_2"|RECORDING_SESSION_LABEL=="Melody_3"), TRIAL_INDEX+3, TRIAL_INDEX)))%>%#fix the trial number
+sample.data <- read_delim("data/elephant_final_sample_report.txt", na=".", delim="\t")%>%
+  mutate(Session_Name=recode_factor(RECORDING_SESSION_LABEL, Georgia2="Georgia_2",Georgia1="Georgia_1", Georgia3="Georgia_3", Schnee1="Schnee_1", Georgia4="Georgia_4"))%>%
+  mutate(TRIAL_INDEX=as.numeric(ifelse(RECORDING_SESSION_LABEL=="Georgia4", TRIAL_INDEX+3, ifelse(RECORDING_SESSION_LABEL=="Ace_2",TRIAL_INDEX+1,TRIAL_INDEX))))%>%#fix the trial number
   separate(Session_Name, c("subject", "session.num"), sep = "_") %>%
   full_join(demo_data) %>%
-  filter(!is.na(session.num))%>%
+  #filter(!is.na(session.num))%>%
   mutate(time = TIMESTAMP - IP_START_TIME)
 
 
@@ -93,9 +97,14 @@ raw_plot_pupil<-ggplot(data = sample.data, aes(x = time, y = RIGHT_PUPIL_SIZE)) 
         panel.grid.minor.x = element_blank(),
         panel.grid.major.y = element_blank(),
         panel.grid.minor.y = element_blank(),
-        legend.title = element_blank(), legend.position = c(0.65, 0.1), legend.text=element_text(size=12))
+        legend.title = element_blank(), legend.position = "bottom"#c(0.65, 0.1)
+        , legend.text=element_text(size=12))
+raw_plot_pupil
+```
 
-ggsave(raw_plot_pupil, filename = "graphics/raw_plot_pupil.png", width=10, height=8, scale=0.8)
+
+```{r eval=FALSE}
+ggsave(raw_plot_pupil, filename = "graphics/pupil_raw_plot.png", width=14, height=8, scale=0.8)
 ```
 * Plot with blink artefacts removed
 ```{r }
@@ -103,7 +112,8 @@ sample.data<-sample.data%>%
         mutate(RIGHT_PUPIL_SIZE_no_blinks=extend_blinks(RIGHT_PUPIL_SIZE,  hz=1000, fillback=100, fillforward=100))#Extends blinks
 
 
-artefact_check<-ggplot(data = sample.data%>% filter(condition != "hab"), aes(x = time, y = RIGHT_PUPIL_SIZE_no_blinks)) +
+artefact_check<-ggplot(data = sample.data,
+  aes(x = time, y = RIGHT_PUPIL_SIZE_no_blinks)) +
   ylab("Pupil size") +
   xlab("Time (in ms)") +
   geom_point(aes(color = condition), alpha = 0.1, size = 0.5) +
@@ -119,8 +129,11 @@ artefact_check<-ggplot(data = sample.data%>% filter(condition != "hab"), aes(x =
         legend.title = element_blank(), legend.position ="none")
 
 artefact_check
+```
 
-#ggsave(artefact_check, filename = "graphics/contact_artefact_check_100.png", width=10, height=8)
+
+```{r }
+ggsave(artefact_check, filename = "graphics/pupil_blinks_removed.png", width=15, height=8)
 ```
 
 proportion of valid data
@@ -136,14 +149,17 @@ prop.tracked.data%>%group_by(condition)%>%summarise(min(prop))
 
 
 prop.tracked.gaze.data<-sample.data%>%
-  filter(time<=4770)%>%
+  filter(time<=3230)%>%
   filter(RIGHT_GAZE_X<1024&RIGHT_GAZE_X>0&RIGHT_GAZE_Y<768&RIGHT_GAZE_Y>0)%>%
   group_by(subject, condition, TRIAL_INDEX)%>%
   summarise(prop=sum(!is.na(RIGHT_GAZE_X))/max(time))
 
+which(prop.tracked.gaze.data$prop<0.7)
 #filter out subjects with onscreen gaze data <70%
 sample.data<-sample.data%>%
-  filter(!(subject=="Timo" & TRIAL_INDEX==4 & condition=="human_outside"))
+  filter(!(subject=="Amy" & TRIAL_INDEX==3 & condition=="human_within"))%>%
+  filter(!(subject=="Maylo" & TRIAL_INDEX==1 & condition=="human_within"))%>%
+  filter(!(subject=="Zserbo" & TRIAL_INDEX==3 & condition=="human_within"))
 
 ```
 
@@ -186,16 +202,15 @@ exp.data.pupil.processed.downsampled <- exp.data.pupil.processed %>%
   group_by(subject, condition, TRIAL_INDEX, bin_low)%>%
   summarise(pupil.base.corrected.binned=median(pupil.base.corrected), Xgaze=median(RIGHT_GAZE_X), Ygaze=median(RIGHT_GAZE_Y))%>%
   ungroup()
+
+levels(as.factor(exp.data.pupil.processed.downsampled$TRIAL_INDEX))
+levels(as.factor(exp.data.pupil.processed.downsampled$subject))
 ```
 
 
 * Plot interpolated data: individual level
 ```{r}
-
-#exp.data.pupil.processed.downsampled2<-exp.data.pupil.processed.downsampled%>%
-#  mutate(condition=fct_recode(condition, "No contact"="exp", "Contact"="con"))
-
-plot.ball.pupil.individual<-ggplot(data = exp.data.pupil.processed.downsampled, aes(x = bin_low, y =pupil.base.corrected.binned )) +
+plot.pupil.individual<-ggplot(data = exp.data.pupil.processed.downsampled, aes(x = bin_low, y =pupil.base.corrected.binned )) +
   ylab("Pupil size ") +
   xlab("Time (in ms)") +
     geom_vline(aes(xintercept=baseline.end), lty=2, alpha=0.3)+
@@ -212,20 +227,20 @@ plot.ball.pupil.individual<-ggplot(data = exp.data.pupil.processed.downsampled, 
         panel.grid.minor.y = element_blank(),
         legend.title = element_blank(), legend.position = "none")
 
-plot.ball.pupil.individual
-#ggsave(plot.ball.pupil.individual, filename = "graphics/plot.ball.pupil_baseline_corrected_individual.png", height = 7, width = 8, scale = 0.8)
+plot.pupil.individual
+
+#ggsave(plot.contact.pupil.individual, filename = "graphics/plot.contact.pupil_baseline_corrected_individual.png", height = 7, width = 8, scale = 0.8)
 ```
 
 * Plot group level data
 ```{r}
-
 pupil.group.level <- exp.data.pupil.processed.downsampled %>%
-  filter(!is.na(condition))%>%
-  mutate(condition=recode(condition, "human_outside"="Human outside", "human_within"="Human within", "dog"="Dog"))%>%
   group_by(bin_low, condition) %>%
-  summarise(mean.pupil.corrected.binned = mean(pupil.base.corrected.binned, na.rm = TRUE), sd.pupil.corrected.binned= sd(pupil.base.corrected.binned, na.rm = TRUE), se.pupil.corrected.binned = sd(pupil.base.corrected.binned, na.rm = TRUE) / sqrt(length(pupil.base.corrected.binned)))
+  summarise(mean.pupil.corrected.binned = mean(pupil.base.corrected.binned, na.rm = TRUE), sd.pupil.corrected.binned= sd(pupil.base.corrected.binned, na.rm = TRUE), se.pupil.corrected.binned = sd(pupil.base.corrected.binned, na.rm = TRUE) / sqrt(length(pupil.base.corrected.binned)))%>%
+filter(!is.na(condition))%>%
+mutate(condition=recode(condition, "human_outside"="Human outside", "human_within"="Human within", "dog"="Dog"))
 
-plot.ball.pupil <- ggplot(data = pupil.group.level, aes(x = bin_low, y = mean.pupil.corrected.binned)) +
+plot.elephant.pupil <- ggplot(data = pupil.group.level, aes(x = bin_low, y = mean.pupil.corrected.binned)) +
   geom_vline(aes(xintercept=baseline.end), lty=2, alpha=0.3)+
     ylab("Pupil size") +
   xlab("Time (in ms)") +
@@ -239,11 +254,14 @@ plot.ball.pupil <- ggplot(data = pupil.group.level, aes(x = bin_low, y = mean.pu
         panel.grid.minor.x = element_blank(),
         panel.grid.major.y = element_blank(),
         panel.grid.minor.y = element_blank(),
-        legend.title = element_blank(), legend.position = c(0.80, 0.25), legend.text=element_text(size=12))
+        legend.title = element_blank(), legend.position = c(0.80, 0.30), legend.text=element_text(size=12))
 
-plot.ball.pupil
+plot.elephant.pupil
+```
 
-ggsave(plot.ball.pupil, filename = "graphics/plot.ball.pupil_gaze_corrected_200bl.png", height = 5, width = 8, scale = 0.7, dpi=1200)
+
+```{r}
+ggsave(plot.elephant.pupil, filename = "graphics/pupil_gaze_corrected_200bl.png", height = 5, width = 8, scale = 0.7)
 ```
 ### GAMM
 
@@ -311,9 +329,12 @@ AIC(m2, m2.null)
 ```
 
 
+
 ```{r}
 #save gam_check
-library(visibly)
+#install.packages("remotes")
+remotes::install_github("m-clark/visibly")
+library(visibly) 
 png("graphics/GAMM01_gam_check.png", units="cm", res=600, width=24, height = 18)
 gam_check_plot<-plot_gam_check(m2, scatter=TRUE)
 print(gam_check_plot)
@@ -329,10 +350,12 @@ dev.off()
 * difference curve
 ```{r}
 #save data
+
 plot_diff_m2_dog_hw<-plot_diff(m2, view="time", 
           comp=list(condition=c("dog", "human_within")), rm.ranef=TRUE, 
           las=1, ylab="Est. difference in pupil size", 
             col=col2, hide.label = TRUE, plot = FALSE)
+
 
 plot_diff_m2_dog_ho<-plot_diff(m2, view="time", 
           comp=list(condition=c("dog", "human_outside")), rm.ranef=TRUE, 
@@ -349,7 +372,8 @@ plot_diff_m2_dog_hw<-ggplot(data=plot_diff_m2_dog_hw, aes(x=time, y=est))+
   geom_path(lty=2)+
   geom_ribbon(aes(x=time, ymin=est-CI, ymax=est+CI), alpha=0.2)+
   theme_bw()+
-  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Dog - Human within")+
+  #ylim(-200, 800)+
+  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Dog - Human-within")+
     theme(panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
         panel.grid.major.y = element_blank(),
@@ -360,7 +384,8 @@ plot_diff_m2_dog_ho<-ggplot(data=plot_diff_m2_dog_ho, aes(x=time, y=est))+
   geom_path(lty=2)+
   geom_ribbon(aes(x=time, ymin=est-CI, ymax=est+CI), alpha=0.2)+
   theme_bw()+
-  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Dog - Human outside")+
+  #ylim(-200, 800)+
+  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Dog - Human-outside")+
     theme(panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
         panel.grid.major.y = element_blank(),
@@ -371,7 +396,7 @@ plot_diff_m2_hw_ho<-ggplot(data=plot_diff_m2_hw_ho, aes(x=time, y=est))+
   geom_path(lty=2)+
   geom_ribbon(aes(x=time, ymin=est-CI, ymax=est+CI), alpha=0.2)+
   theme_bw()+
-  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Human within - Human outside")+
+  scale_x_continuous(name="Time (in ms)", breaks=c(3000, 4000, 5000, 6000))+ ylab("Est. difference in pupil size")+ggtitle("Human-within - Human-outside")+
     theme(panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
         panel.grid.major.y = element_blank(),
@@ -379,22 +404,21 @@ plot_diff_m2_hw_ho<-ggplot(data=plot_diff_m2_hw_ho, aes(x=time, y=est))+
 
 library(cowplot)
 pg_m2<-plot_grid(plot_diff_m2_dog_hw, plot_diff_m2_dog_ho, plot_diff_m2_hw_ho, nrow=1, labels=c("B", "C", "D"))
-pg_m2
 
 
-ggsave(pg_m2, filename = "graphics/AP_ball_pupilsize_diff_m2_gg.png", width=18, height=6, scale=0.6, dpi=1200)
+ggsave(pg_m2, filename = "graphics/pupil_diff_m2_gg.png", width=18, height=6, scale=0.6)
 
 ```
 
 * plotting partial effects
 ```{r}
-pdf("graphics/AP_ball_m2_GAMM_partical_effect.pdf", width=10, height = 8)
+pdf("graphics/AP_elephant_m2_GAMM_partical_effect.pdf", width=10, height = 8)
 plot(m2, pages = 1, all.terms = TRUE, residuals = TRUE, rug=FALSE, pch = 1, cex = 0.5, seWithMean = TRUE, shade = TRUE, shade.col = "lightblue")
 dev.off()
 
 library(mgcViz)
 b <- getViz(m2)
-png("graphics/AP_ball_m2_GAMM_partical_effect2.png", units="cm", res=600, width=24, height = 16)
+png("graphics/AP_elephant_m2_GAMM_partical_effect2.png", units="cm", res=600, width=24, height = 16)
 p1<-plot(b, allTerms = T)+theme_classic() + labs(title = NULL)
 print(p1, pages = 1 )
 dev.off()
@@ -431,9 +455,10 @@ plot_modelfit(m2, view="time", event=tmp$Event,n = 2)
 ```{r}
 library(cowplot)
 
-pg_ball<-plot_grid(plot.ball.pupil, pg_m2, rel_widths = c(2,0.5),rel_heights=c(1,0.7),labels=c("A"), ncol=1)
-pg_ball
-ggsave(pg_ball, filename = "graphics/pupil_size_plots.png", width=12, height=9, scale=0.8, dpi=1200)
+pg_elephant<-plot_grid(plot.elephant.pupil,pg_m2, rel_widths = c(2,0.5), rel_heights=c(1,0.7), labels=c("A"), ncol=1)
+pg_elephant
+
+ggsave(pg_elephant, filename = "graphics/pupil_size_plots.png", width=12, height=9, scale=0.8, dpi=1200)
 
 ```
 
