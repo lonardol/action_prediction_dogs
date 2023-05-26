@@ -386,6 +386,46 @@ table(model_data$order, model_data$sex)
 model_data$condition_dummy1.c=scale(as.numeric(model_data$condition==levels(as.factor(dyn_ia_data$condition))[2]), center=TRUE, scale= FALSE)
 model_data$condition_dummy2.c=scale(as.numeric(model_data$condition==levels(as.factor(dyn_ia_data$condition))[3]), center=TRUE, scale= FALSE)
 
+NA_trials<-table(model_data$condition,is.na(model_data$min_arrival_time))
+NA_trials
+```
+#fit a binomial model to check if the probability that dogs do not look at the target in a trial does not differ significantly across conditions
+```{r}
+#create the dependent variable
+summary(model_data$arrival_time_standardised)
+model_data$looked_at_target<-ifelse(is.na(model_data$arrival_time_standardised),0,1)
+summary(as.factor(model_data$looked_at_target))
+
+#fit the binomial model
+
+bn.m.notarget<-glmer(looked_at_target ~ condition+z.trial+z.order+
+            (1+condition+z.trial|subject),
+             data=model_data, family=binomial, 
+            control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+#model failed to converge, hence take out correlation between random slopes and icpt. Failed to converge a second time so take out random slope of trial number. Failed to converge a third time, take out random slope of condition.
+bn.m.notarget<-glmer(looked_at_target ~ condition+z.trial+z.order+
+            (1|subject),
+             data=model_data, family=binomial, 
+            control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+
+round(summary(bn.m.notarget)$coefficients,3)
+res.bn.m.notarget<-round(drop1(bn.m.notarget, test="Chisq"),3)
+res.bn.m.notarget
+
+#fit the model with condition relevelled for pairwise comparisons
+model_data$condition.rel<-relevel(as.factor(model_data$condition), ref="human_within")
+levels(as.factor(model_data$condition))
+levels(as.factor(model_data$condition.rel))
+bn.m.notarget.rel<-glmer(looked_at_target ~ condition.rel+z.trial+z.order+
+            (1|subject),
+             data=model_data, family=binomial, 
+            control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+
+round(summary(bn.m.notarget.rel)$coefficients,3)
+```
+
+```{r}
+#exclude trials in which dogs never looked at target for gaze arrival times analysis
 model_data<-model_data%>%filter(!is.na(min_arrival_time))
 ```
 ## fitting LMM (standardised arrival time)

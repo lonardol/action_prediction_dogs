@@ -395,7 +395,6 @@ arrival_time_plot_first_trial2
 ggsave(plot=arrival_time_plot_first_trial2, filename="graphics/arrival_times_barplot_1st_trial_ball.png", dpi=1200, scale=0.6, width=6, height=8)
 ```
 
-
 ## LMM
 ```{r}
 #demo_data2<-read.csv(file="data/AP_ball_counterbalancing_order.csv")
@@ -413,8 +412,33 @@ summary(model_data)
 table(model_data$condition, model_data$sex)
 table(model_data$order, model_data$sex)
 
+table(model_data$condition,is.na(model_data$min_arrival_time))
+NA_trials<-table(model_data$condition,model_data$arrival_time_standardised=="NA")
+```
+#fit a binomial model to check that the probability that dogs do not look at the target in a trial does not differ significantly across conditions
+```{r}
+#create the dependent variable
+summary(model_data$arrival_time_standardised)
+model_data$looked_at_target<-ifelse(is.na(model_data$arrival_time_standardised),0,1)
+summary(as.factor(model_data$looked_at_target))
+
+#fit the binomial model
+
+bn.m.notarget<-glmer(looked_at_target ~ condition+z.trial+z.order+
+            (1+condition+z.trial|subject),
+             data=model_data, family=binomial, 
+            control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+
+round(summary(bn.m.notarget)$coefficients,2)
+res.bn.m.notarget<-round(drop1(bn.m.notarget, test="Chisq"),3)
+res.bn.m.notarget
+```
+
+```{r}
+#exclude trials in which dogs never looked at the target for gaze arrival times analysis
 model_data<-model_data%>%filter(!is.na(arrival_time_standardised ))
 ```
+
 ## fitting LMM (standardised arrival time)
 ```{r}
 #library(lmerTest)
